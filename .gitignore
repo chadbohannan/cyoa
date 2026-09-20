@@ -1,0 +1,13 @@
+.DS_Store
+*.log
+.env
+.env.*.local
+.claude/settings.local.json
+wiki/cyoa-wiki/.obsidian/workspace.json
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.db
+*.db-wal
+*.db-shm

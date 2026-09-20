@@ -1,0 +1,26 @@
+[project]
+name = "cyoa"
+version = "0.1.0"
+description = "Tools for composing choose-your-own-adventure interactive books"
+authors = [
+    { name = "Chad Bohannan", email = "chad.bohannan@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "uvicorn[standard]>=0.53.0",
+]
+
+[project.scripts]
+cyoa = "cyoa.main:run"
+
+[build-system]
+requires = ["uv_build>=0.8.13,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
