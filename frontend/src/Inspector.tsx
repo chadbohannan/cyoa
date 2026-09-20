@@ -3,7 +3,7 @@
 // nothing is selected.
 
 import { useState } from 'react'
-import type { Choice, Passage, Variable, VariableKind } from './api'
+import { api, type Choice, type Passage, type Variable, type VariableKind } from './api'
 import { ConditionEditor, EffectsEditor } from './clauses'
 import { NumberField, TextArea, TextField } from './fields'
 import { AssistToolbar, ProposalList, ProposalPanel } from './Proposals'
@@ -205,6 +205,8 @@ function StoryPanel({ store }: { store: StoryStore }) {
       <label>Description<TextArea rows={4} value={story.description} onSave={(description) => store.updateStory({ description })} /></label>
       <p className="muted small">
         {passages.length} passage{passages.length === 1 ? '' : 's'} · IFID <code>{story.ifid}</code>
+        {' · '}
+        <a href={api.tweeUrl(story.id)} download title="Twee 3 with SugarCube macros; Twine and Tweego import it">Export Twee</a>
       </p>
 
       <div className="panel-head"><span className="kind">Variables</span></div>

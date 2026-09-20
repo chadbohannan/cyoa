@@ -129,6 +129,7 @@ button.primary { border-color: var(--accent); background: color-mix(in srgb, var
 .proposal-text { white-space: pre-wrap; border: 1px solid var(--line); border-radius: 4px; padding: 0.4rem 0.5rem; max-height: 16rem; overflow-y: auto; font-size: 0.95em; }
 .passage-card.ghost { border-style: dashed; color: var(--muted); background: color-mix(in srgb, Canvas 85%, var(--accent)); }
 .passage-card-proposal { margin-top: 0.25rem; color: var(--accent); font-size: 0.9em; }
+.passage-card-merge { margin-top: 0.25rem; color: var(--warn, #b8860b); font-size: 0.9em; }
 .react-flow__edge.ghost .react-flow__edge-path { stroke-dasharray: 6 4; stroke: var(--accent); opacity: 0.7; }
 .react-flow__edge.ghost .react-flow__edge-textbg { fill-opacity: 0.6; }
 select.model { width: auto; max-width: 16rem; }

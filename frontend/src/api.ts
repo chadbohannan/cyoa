@@ -196,6 +196,34 @@ export interface Problems {
   dangling: number[]
   undeclared: { choice_id: number; var: string }[]
   endings: number[]
+  merge_candidates: MergeCandidate[]
+}
+
+// Passages sharing story time, location and events: one scene reached by several routes.
+export interface MergeCandidate {
+  t: number
+  location: string
+  events: string[]
+  passage_ids: number[]
+}
+
+export interface PromoteRequest {
+  root?: number | null // its subtree (passages reachable only through it), as the map's collapse defines it
+  passage_ids?: number[]
+  reviewed?: boolean
+}
+
+// Coverage from random playthroughs; the counters are keyed by String(id) as JSON has it.
+export interface Playtest {
+  runs: number
+  mean_length: number
+  cut: number
+  visited: Record<string, number>
+  unvisited: number[]
+  untaken: number[]
+  endings: Record<string, number>
+  stuck: Record<string, number>
+  dangling: Record<string, number>
 }
 
 type Omitted = 'id' | 'story_id'
@@ -243,13 +271,21 @@ export const api = {
   passages: {
     ...child<Passage, PassageInput>('passages'),
     duplicate: (storyId: number, id: number) => post<Passage>(`/stories/${storyId}/passages/${id}/duplicate`),
+    // fold `passageIds` into `into`: inbound choices retargeted, outgoing moved, the others deleted
+    merge: (storyId: number, into: number, passageIds: number[]) =>
+      post<Passage>(`/stories/${storyId}/passages/merge`, { into, passage_ids: passageIds }),
   },
+  promote: (storyId: number, body: PromoteRequest) => post<{ passage_ids: number[] }>(`/stories/${storyId}/promote`, body),
   choices: child<Choice, ChoiceInput>('choices'),
   variables: child<Variable, VariableInput>('variables'),
   lore: child<Lore, LoreInput>('lore'),
   events: child<StoryEvent, EventInput>('events'),
 
   problems: (storyId: number) => request<Problems>(`/stories/${storyId}/problems`),
+  playtest: (storyId: number, body: { runs?: number; max_steps?: number; seed?: number | null }) =>
+    post<Playtest>(`/stories/${storyId}/playtest`, body),
+  // a download link, not a fetch: the browser saves the Twee file
+  tweeUrl: (storyId: number) => `/api/stories/${storyId}/export.twee`,
   play: {
     start: (storyId: number, passageId: number | null = null) =>
       post<PlayView>(`/stories/${storyId}/play/start`, { passage_id: passageId }),

@@ -172,8 +172,111 @@ def test_play_and_problems(client):
         "dangling": [dangle["id"]],
         "undeclared": [{"choice_id": dangle["id"], "var": "shovel"}],
         "endings": [island["id"]],
+        "merge_candidates": [],
     }
 
     c.delete(f"{base}/passages/{start}")
     assert c.post(f"{base}/play/start", json={}).status_code == 409
     assert c.get(f"{base}/problems").json()["no_start"] is True
+
+
+def _chain(c, base, start, titles, **passage):
+    """start -> t1 -> t2 ... ; returns the passage ids in order."""
+    ids, prev = [], start
+    for title in titles:
+        p = c.post(f"{base}/passages", json={"title": title, **passage}).json()
+        c.post(f"{base}/choices", json={"from_passage": prev, "to_passage": p["id"], "text": f"to {title}"})
+        ids.append(p["id"])
+        prev = p["id"]
+    return ids
+
+
+def test_promote_subtree_and_explicit(client):
+    c = client
+    s = c.post("/api/stories", json={"title": "Fork"}).json()
+    sid, start = s["id"], s["start_passage_id"]
+    base = f"/api/stories/{sid}"
+    left = _chain(c, base, start, ["L1", "L2"])
+    right = _chain(c, base, start, ["R1"])
+    # L2 also links to R1: R1 is reachable around L1, so it is not L1's subtree
+    c.post(f"{base}/choices", json={"from_passage": left[1], "to_passage": right[0], "text": "cross"})
+
+    r = c.post(f"{base}/promote", json={"root": left[0]}).json()
+    assert r["passage_ids"] == sorted(left)
+    reviewed = {p["id"]: p["reviewed"] for p in c.get(f"{base}/graph").json()["passages"]}
+    assert reviewed == {start: False, left[0]: True, left[1]: True, right[0]: False}
+
+    r = c.post(f"{base}/promote", json={"passage_ids": [right[0], 9999], "reviewed": True}).json()
+    assert r["passage_ids"] == [right[0]]
+    r = c.post(f"{base}/promote", json={"root": start, "reviewed": False}).json()
+    assert r["passage_ids"] == sorted([start, *left, *right])
+    assert not any(p["reviewed"] for p in c.get(f"{base}/graph").json()["passages"])
+
+
+def test_merge_candidates_and_merge(client):
+    c = client
+    s = c.post("/api/stories", json={"title": "Dup"}).json()
+    sid, start = s["id"], s["start_passage_id"]
+    base = f"/api/stories/{sid}"
+    scene = {"t": 3, "meta": {"location": "The Pit", "events": [1]}}
+    a = c.post(f"{base}/passages", json={"title": "Pit A", **scene}).json()
+    b = c.post(f"{base}/passages", json={"title": "Pit B", "t": 3, "meta": {"location": "the pit ", "events": [1]}}).json()
+    other = c.post(f"{base}/passages", json={"title": "Elsewhere", "t": 3, "meta": {"location": "Hall"}}).json()
+    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": a["id"], "text": "left"})
+    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": b["id"], "text": "right"})
+    down = c.post(f"{base}/choices", json={"from_passage": b["id"], "to_passage": other["id"], "text": "down"}).json()
+    c.post(f"{base}/choices", json={"from_passage": b["id"], "to_passage": a["id"], "text": "loop"})
+
+    p = c.get(f"{base}/problems").json()
+    assert p["merge_candidates"] == [{"t": 3, "location": "the pit", "events": ["1"], "passage_ids": sorted([a["id"], b["id"]])}]
+
+    assert c.post(f"{base}/passages/merge", json={"into": a["id"], "passage_ids": [a["id"]]}).status_code == 422
+    assert c.post(f"{base}/passages/merge", json={"into": a["id"], "passage_ids": [9999]}).status_code == 404
+    survivor = c.post(f"{base}/passages/merge", json={"into": a["id"], "passage_ids": [b["id"]]}).json()
+    assert survivor["id"] == a["id"]
+    g = c.get(f"{base}/graph").json()
+    assert sorted(p["id"] for p in g["passages"]) == sorted([start, a["id"], other["id"]])
+    links = sorted((ch["from_passage"], ch["to_passage"], ch["text"]) for ch in g["choices"])
+    # both inbound choices now point at A, "down" moved to A, the loop B->A became a self-loop and was dropped
+    assert links == sorted([(start, a["id"], "left"), (start, a["id"], "right"), (a["id"], other["id"], "down")])
+    assert down["id"] in {ch["id"] for ch in g["choices"]}
+    assert c.get(f"{base}/problems").json()["merge_candidates"] == []
+
+
+def test_playtest_and_twee_export(client):
+    c = client
+    s = c.post("/api/stories", json={"title": "Cave [1]"}).json()
+    sid, start = s["id"], s["start_passage_id"]
+    base = f"/api/stories/{sid}"
+    c.post(f"{base}/variables", json={"name": "brave", "kind": "flag", "default": False})
+    pit = c.post(f"{base}/passages", json={"title": "Pit", "body": "Dark.", "reviewed": True, "pos_x": 10.5, "pos_y": 20}).json()
+    pit2 = c.post(f"{base}/passages", json={"title": "Pit", "provenance": "agent"}).json()
+    gated = c.post(f"{base}/passages", json={"title": "Sky"}).json()
+    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Jump", "effects": {"set": {"brave": True}}})
+    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": gated["id"], "text": "Fly",
+                                    "condition": {"var": "brave", "op": "==", "value": True}})
+    c.post(f"{base}/choices", json={"from_passage": pit["id"], "to_passage": pit2["id"], "text": "Deeper"})
+    dangle = c.post(f"{base}/choices", json={"from_passage": pit2["id"], "text": "Dig"}).json()
+
+    r = c.post(f"{base}/playtest", json={"runs": 50, "seed": 1}).json()
+    # brave is never true on the start passage, so Sky is unreachable in play and Fly never taken
+    assert r["runs"] == 50 and r["unvisited"] == [gated["id"]] and r["cut"] == 0
+    # JSON objects key by string, so the counters come back keyed by str(id)
+    assert set(r["visited"]) == {str(start), str(pit["id"]), str(pit2["id"])} and r["visited"][str(start)] == 50
+    assert r["endings"] == {} and r["stuck"] == {} and r["dangling"] == {str(dangle["id"]): 50}
+    assert r["mean_length"] == 2.0
+    assert c.post(f"{base}/playtest", json={"runs": 0}).status_code == 422
+
+    res = c.get(f"{base}/export.twee")
+    assert res.status_code == 200 and res.headers["content-disposition"].endswith('filename="Cave 1.twee"')
+    text = res.text
+    assert text.startswith(":: StoryTitle\nCave [1]\n")
+    assert f'"ifid": "{s["ifid"].upper()}"' in text and '"start": "Start"' in text
+    assert ":: StoryInit\n<<set $brave to false>>\n" in text
+    assert ':: Pit [reviewed] {"position":"10,20"}\nDark.\n[[Deeper->Pit (%d)]]\n' % pit2["id"] in text
+    assert ":: Pit (%d) [agent]" % pit2["id"] in text and "/* dangling: Dig */" in text
+    assert '<<link "Jump" "Pit">><<set $brave to true>><</link>>' in text
+    assert "<<if $brave is true>>[[Fly->Sky]]<</if>>" in text
+
+    c.patch(f"{base}", json={"start_passage_id": None})
+    assert c.post(f"{base}/playtest", json={}).status_code == 409

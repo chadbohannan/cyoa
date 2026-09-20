@@ -3,7 +3,7 @@
 // the debug drawer lets the author jump to any earlier step.
 
 import { useEffect, useState } from 'react'
-import { api, type Choice, type PlayView } from './api'
+import { api, type Choice, type Playtest, type PlayView } from './api'
 import type { StoryStore } from './useStory'
 
 type Step = { view: PlayView; via: Choice | null }
@@ -111,6 +111,73 @@ export function Player({ store, from, onStop }: Props) {
           </div>
         </details>
       )}
+
+      <PlaytestPanel store={store} />
     </div>
+  )
+}
+
+// Random playthroughs through the same evaluator as the reader above: a
+// coverage report over the whole story, not a run. Titles are looked up in the
+// graph so the report reads as passages, not ids.
+function PlaytestPanel({ store }: { store: StoryStore }) {
+  const { graph, storyId } = store
+  const [runs, setRuns] = useState(200)
+  const [report, setReport] = useState<Playtest | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const title = (id: number | string) => graph?.passages.find((p) => p.id === Number(id))?.title || `#${id}`
+  const choiceLabel = (id: number | string) => {
+    const c = graph?.choices.find((c) => c.id === Number(id))
+    return c ? `${title(c.from_passage)} → “${c.text}”` : `#${id}`
+  }
+  const counts = (m: Record<string, number>, label: (id: string) => string) =>
+    Object.entries(m).sort((a, b) => b[1] - a[1]).map(([id, n]) => <li key={id}>{label(id)} <span className="muted small">×{n}</span></li>)
+
+  async function run() {
+    setBusy(true)
+    setError(null)
+    try {
+      setReport(await api.playtest(storyId, { runs }))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <details className="debug playtest">
+      <summary>Random playtest{report ? ` · ${report.unvisited.length} unvisited · ${Object.keys(report.stuck).length} stuck` : ''}</summary>
+      <div className="player-bar">
+        <label>runs <input type="number" min={1} max={10000} value={runs} onChange={(e) => setRuns(Number(e.target.value) || 1)} style={{ width: '5em' }} /></label>
+        <button disabled={busy || !graph} onClick={run}>{busy ? 'Playing…' : 'Play randomly'}</button>
+        {report && (
+          <span className="muted small">
+            {report.runs} walks · mean {report.mean_length.toFixed(1)} steps · {Object.keys(report.visited).length}/{graph?.passages.length ?? 0} passages seen
+            {report.cut > 0 && ` · ${report.cut} cut by the step cap`}
+          </span>
+        )}
+      </div>
+      {error && <p className="error">{error}</p>}
+      {report && (
+        <div className="debug-grid">
+          <section>
+            <h4>Endings reached</h4>
+            <ul className="path">{counts(report.endings, title)}{Object.keys(report.endings).length === 0 && <li className="muted">none</li>}</ul>
+            <h4>Stuck (choices exist, none open)</h4>
+            <ul className="path">{counts(report.stuck, title)}{Object.keys(report.stuck).length === 0 && <li className="muted">none</li>}</ul>
+            <h4>Dangling choices hit</h4>
+            <ul className="path">{counts(report.dangling, choiceLabel)}{Object.keys(report.dangling).length === 0 && <li className="muted">none</li>}</ul>
+          </section>
+          <section>
+            <h4>Never visited ({report.unvisited.length})</h4>
+            <ul className="path">{report.unvisited.map((id) => <li key={id}>{title(id)}</li>)}{report.unvisited.length === 0 && <li className="muted">none</li>}</ul>
+            <h4>Never taken ({report.untaken.length})</h4>
+            <ul className="path">{report.untaken.map((id) => <li key={id}>{choiceLabel(id)}</li>)}{report.untaken.length === 0 && <li className="muted">none</li>}</ul>
+          </section>
+        </div>
+      )}
+    </details>
   )
 }

@@ -22,7 +22,7 @@ Since phase 3 (2026-09-20) a seventh table, `proposals`, sits beside these: an a
 
 ## What is not modeled yet
 
-The evaluator, the stateless player and the `problems` validator exist as of 2026-09-20 (see the [backend](../systems/backend.md)), but there is still no export target — print/ebook export was offered in the interview and not selected. When export does arrive, [interchange formats](interchange-formats.md) records how these tables map onto Twee 3 and ink and why an `ifid` column is worth adding first. Each of these will become its own page when it exists.
+The evaluator, the stateless player and the `problems` validator exist as of 2026-09-20 (see the [backend](../systems/backend.md)), and since phase 6 the same day there is one export target: `GET .../export.twee` renders the tables as Twee 3 with SugarCube macros exactly as [interchange formats](interchange-formats.md) mapped them (the `ifid` column it recommended is what `StoryData` carries). Print/ebook export was offered in the interview and not selected, and there is no import yet. Each of these will become its own page when it exists.
 
 | Reference | Role |
 |-----------|------|

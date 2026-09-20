@@ -13,6 +13,7 @@ import {
   type LoreInput,
   type Passage,
   type PassageInput,
+  type PromoteRequest,
   type Story,
   type StoryEvent,
   type StoryGraph,
@@ -73,6 +74,18 @@ export function useStory(storyId: number) {
   const duplicatePassage = guard(async (id: number) => {
     const p = await api.passages.duplicate(storyId, id)
     reload() // the copy's choices were made server-side; cheapest to refetch
+    return p
+  })
+  // Promotion flips `reviewed` over a subtree or a selection at once; the server picks the subtree.
+  const promote = guard(async (body: PromoteRequest) => {
+    const { passage_ids } = await api.promote(storyId, body)
+    const flipped = new Set(passage_ids)
+    patchGraph((g) => ({ ...g, passages: g.passages.map((p) => (flipped.has(p.id) ? { ...p, reviewed: body.reviewed ?? true } : p)) }))
+    return passage_ids
+  })
+  const mergePassages = guard(async (into: number, ids: number[]) => {
+    const p = await api.passages.merge(storyId, into, ids)
+    reload() // choices were retargeted and moved server-side
     return p
   })
 
@@ -201,6 +214,8 @@ export function useStory(storyId: number) {
     updatePassage,
     deletePassage,
     duplicatePassage,
+    promote,
+    mergePassages,
     createChoice,
     updateChoice,
     deleteChoice,

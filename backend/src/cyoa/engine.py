@@ -22,7 +22,8 @@ floors at zero.
 
 from __future__ import annotations
 
-from collections import deque
+import random
+from collections import Counter, deque
 from typing import Any, Iterable
 
 State = dict[str, Any]
@@ -142,6 +143,132 @@ def problems(
         "dangling": [c["id"] for c in choices if c["to_passage"] is None],
         "undeclared": undeclared,
         "endings": [pid for pid in ids if not out_of[pid]],
+        "merge_candidates": merge_candidates(passages),
+    }
+
+
+def _outgoing(choices: Iterable[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    out: dict[int, list[dict[str, Any]]] = {}
+    for c in choices:
+        out.setdefault(c["from_passage"], []).append(c)
+    return out
+
+
+def subtree(root: int, start_passage_id: int | None, passages: Iterable[dict[str, Any]], choices: Iterable[dict[str, Any]]) -> list[int]:
+    """The root plus every passage reachable from it *only* through it.
+
+    Passages the rest of the map can still reach (from the start or from any
+    passage nothing links to) are not part of the subtree, so promoting or
+    collapsing a branch never swallows the trunk. Same rule as the map's collapse.
+    """
+    passages, choices = list(passages), list(choices)
+    out = _outgoing(choices)
+    ids = {p["id"] for p in passages}
+    if root not in ids:
+        return []
+    inbound = {c["to_passage"] for c in choices if c["to_passage"] is not None}
+    # everything reachable without stepping past the root
+    visible: set[int] = set()
+    queue = deque(pid for pid in ids if pid == start_passage_id or pid not in inbound)
+    while queue:
+        pid = queue.popleft()
+        if pid in visible:
+            continue
+        visible.add(pid)
+        if pid != root:
+            queue.extend(c["to_passage"] for c in out.get(pid, []) if c["to_passage"] is not None)
+    mine = [root]
+    seen = {root}
+    queue = deque([root])
+    while queue:
+        for c in out.get(queue.popleft(), []):
+            nxt = c["to_passage"]
+            if nxt is None or nxt in seen or nxt in visible or nxt not in ids:
+                continue
+            seen.add(nxt)
+            mine.append(nxt)
+            queue.append(nxt)
+    return mine
+
+
+def merge_candidates(passages: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Groups of passages sharing story time, location and events: the same scene
+    reached by different routes, and so the natural things to merge."""
+    groups: dict[tuple[Any, ...], list[int]] = {}
+    for p in passages:
+        meta = p.get("meta") or {}
+        location = meta.get("location") if isinstance(meta, dict) else None
+        if p.get("t") is None or not location:
+            continue
+        events = meta.get("events") if isinstance(meta.get("events"), list) else []
+        key = (p["t"], str(location).strip().lower(), tuple(sorted(str(e) for e in events)))
+        groups.setdefault(key, []).append(p["id"])
+    return [
+        {"t": t, "location": location, "events": list(events), "passage_ids": sorted(ids)}
+        for (t, location, events), ids in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        if len(ids) > 1
+    ]
+
+
+def random_playthroughs(
+    start_passage_id: int | None,
+    passages: Iterable[dict[str, Any]],
+    choices: Iterable[dict[str, Any]],
+    variables: Iterable[dict[str, Any]],
+    runs: int = 200,
+    max_steps: int = 200,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Walk the story ``runs`` times taking a random available choice each step,
+    through the same ``check``/``apply`` as the player. The shape mirrors
+    ``models.Playtest``: what was never visited, where readers got stuck (choices
+    exist but none is available in that state), which endings were reached and
+    how often, and how many walks the step cap cut short."""
+    passages, choices = list(passages), list(choices)
+    ids = [p["id"] for p in passages]
+    out = _outgoing(choices)
+    rng = random.Random(seed)
+    seen_p: Counter[int] = Counter()
+    seen_c: Counter[int] = Counter()
+    endings: Counter[int] = Counter()
+    stuck: Counter[int] = Counter()
+    dangling: Counter[int] = Counter()
+    cut, lengths = 0, []
+    start_state = initial_state(variables)
+    if start_passage_id in out or start_passage_id in ids:
+        for _ in range(runs):
+            pid, state, steps = start_passage_id, dict(start_state), 0
+            while True:
+                seen_p[pid] += 1
+                options = out.get(pid, [])
+                if not options:
+                    endings[pid] += 1
+                    break
+                open_ = [c for c in options if check(c["condition"], state)]
+                if not open_:
+                    stuck[pid] += 1
+                    break
+                if steps >= max_steps:
+                    cut += 1
+                    break
+                c = rng.choice(open_)
+                seen_c[c["id"]] += 1
+                if c["to_passage"] is None:
+                    dangling[c["id"]] += 1
+                    break
+                state = apply(c["effects"], state)
+                pid, steps = c["to_passage"], steps + 1
+            lengths.append(steps)
+    return {
+        "runs": runs,
+        "mean_length": (sum(lengths) / len(lengths)) if lengths else 0.0,
+        "cut": cut,
+        "visited": {pid: seen_p[pid] for pid in ids if seen_p[pid]},
+        "unvisited": [pid for pid in ids if not seen_p[pid]],
+        "untaken": [c["id"] for c in choices if not seen_c[c["id"]]],
+        "endings": dict(endings),
+        "stuck": dict(stuck),
+        "dangling": dict(dangling),
     }
 
 

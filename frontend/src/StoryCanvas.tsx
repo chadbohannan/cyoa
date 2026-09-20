@@ -40,6 +40,7 @@ type PassageData = {
   dim: boolean // search active and this card does not match
   unreachable: boolean
   dangling: number // outgoing choices with no target (problems overlay on)
+  mergeWith: number // other passages sharing its scene (problems overlay on)
   proposals: number // pending edits to this passage
   notes: number // pending canon_check notes
   activity: string | null // what a run is doing to this passage right now
@@ -82,6 +83,7 @@ function PassageCard({ data, selected }: NodeProps<PassageNode>) {
       {data.preview && <div className="passage-card-preview">{data.preview}</div>}
       {data.unreachable && <div className="passage-card-problem">unreachable</div>}
       {data.dangling > 0 && <div className="passage-card-problem">{data.dangling} dangling choice{data.dangling > 1 ? 's' : ''}</div>}
+      {data.mergeWith > 0 && <div className="passage-card-merge" title="same time, location and events as another passage">⧉ merge candidate ×{data.mergeWith + 1}</div>}
       {data.proposals > 0 && <div className="passage-card-proposal">✎ {data.proposals} proposed edit{data.proposals > 1 ? 's' : ''}</div>}
       {data.notes > 0 && <div className="passage-card-problem">⚠ {data.notes} canon note{data.notes > 1 ? 's' : ''}</div>}
       {data.activity && <div className="passage-card-activity">✍ {ACTIVITY_LABEL[data.activity] ?? data.activity}</div>}
@@ -259,6 +261,8 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
     const unreachable = new Set(problems?.unreachable ?? [])
     const dangling = new Set(problems?.dangling ?? [])
     const undeclared = new Set(problems?.undeclared.map((u) => u.choice_id) ?? [])
+    const mergeWith = new Map<number, number>()
+    for (const m of problems?.merge_candidates ?? []) for (const id of m.passage_ids) mergeWith.set(id, m.passage_ids.length - 1)
     const { hidden, summaries } = collapseSubtrees(graph.passages, graph.choices, graph.story.start_passage_id, collapsed)
     const initialNodes: MapNode[] = graph.passages.filter((p) => !hidden.has(p.id)).map((p) => ({
       id: String(p.id),
@@ -273,6 +277,7 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         dim: !matches(p),
         unreachable: unreachable.has(p.id),
         dangling: graph.choices.filter((c) => c.from_passage === p.id && dangling.has(c.id)).length,
+        mergeWith: mergeWith.get(p.id) ?? 0,
         proposals: graph.proposals.filter((q) => q.kind === 'edit_passage' && q.target_passage === p.id).length,
         notes: graph.proposals.filter((q) => q.kind === 'note' && q.target_passage === p.id).length,
         activity: activity[p.id] ?? null,
@@ -392,6 +397,18 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
   }
 
   const menuPassage = menu && graph?.passages.find((p) => p.id === menu.passageId)
+  // Merge folds the multi-selection into the inspected passage when it is one of
+  // them, else into the lowest id; the survivor keeps its title and body.
+  const mergeInto = selection?.kind === 'passage' && scope.includes(selection.id) ? selection.id : scope[0]
+  const mergeTarget = graph?.passages.find((p) => p.id === mergeInto)
+  async function mergeSelected() {
+    if (!mergeTarget || scope.length < 2) return
+    const others = scope.filter((id) => id !== mergeInto)
+    if (!confirm(`Merge ${others.length} passage(s) into "${mergeTarget.title}"? Their choices move to it and they are deleted.`)) return
+    await store.mergePassages(mergeInto, others)
+    onSelect({ kind: 'passage', id: mergeInto })
+  }
+  const allReviewed = scope.length > 1 && scope.every((id) => graph?.passages.find((p) => p.id === id)?.reviewed)
   const problemCount = problems
     ? problems.unreachable.length + problems.dangling.length + problems.undeclared.length + (problems.no_start ? 1 : 0)
     : 0
@@ -410,12 +427,24 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         >
           {checking ? 'Checking…' : canonScope.length ? `Canon check (${canonScope.length} selected)` : 'Canon check (all)'}
         </button>
+        {scope.length > 1 && (
+          <>
+            <button title={allReviewed ? 'clear reviewed on the selection' : 'mark the selection reviewed'}
+              onClick={() => store.promote({ passage_ids: scope, reviewed: !allReviewed })}>
+              {allReviewed ? `Unreview ${scope.length}` : `Review ${scope.length}`}
+            </button>
+            <button title="fold the selected passages into one (merge candidates, endings)" onClick={mergeSelected}>
+              Merge {scope.length} → {mergeTarget?.title ?? '?'}
+            </button>
+          </>
+        )}
         {collapsed.size > 0 && <span className="muted small">{collapsed.size} collapsed</span>}
         {problems && (
           <span className="muted small">
             {problems.no_start && <span className="error">no start · </span>}
             {problems.unreachable.length} unreachable · {problems.dangling.length} dangling · {problems.undeclared.length} undeclared ·{' '}
             {problems.endings.length} ending{problems.endings.length === 1 ? '' : 's'}
+            {problems.merge_candidates.length > 0 && ` · ${problems.merge_candidates.length} merge group${problems.merge_candidates.length === 1 ? '' : 's'}`}
           </span>
         )}
       </div>
@@ -458,6 +487,10 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
           <button onClick={() => onPlayFrom(menu.passageId)}>Play from here</button>
           <button onClick={() => onExpandFrom(menu.passageId)}>Expand from here…</button>
           <button onClick={() => toggleCollapsed(menu.passageId)}>{collapsed.has(menu.passageId) ? 'Expand subtree' : 'Collapse subtree'}</button>
+          <button title="flip reviewed on this passage and everything reachable only through it"
+            onClick={() => store.promote({ root: menu.passageId, reviewed: !menuPassage.reviewed })}>
+            {menuPassage.reviewed ? 'Unreview subtree' : 'Promote subtree'}
+          </button>
           <button className="danger" onClick={() => deletePassage(menu.passageId)}>
             Delete
           </button>

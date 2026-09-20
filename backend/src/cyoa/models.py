@@ -277,3 +277,56 @@ class Problems(BaseModel):
     dangling: list[int]
     undeclared: list[UndeclaredVar]
     endings: list[int]
+    merge_candidates: list[MergeCandidate]
+
+
+class MergeCandidate(BaseModel):
+    """Passages sharing story time, location and events — one scene reached by several routes."""
+
+    t: float
+    location: str
+    events: list[str]
+    passage_ids: list[int]
+
+
+class PromoteRequest(BaseModel):
+    """Flip ``reviewed`` on a set of passages: the subtree under ``root`` (the
+    passages reachable only through it, as the map's collapse defines them),
+    plus any listed explicitly."""
+
+    root: int | None = None
+    passage_ids: list[int] = Field(default_factory=list)
+    reviewed: bool = True
+
+
+class PromoteResult(BaseModel):
+    passage_ids: list[int]
+
+
+class MergeRequest(BaseModel):
+    """Fold ``passage_ids`` into ``into``: their inbound choices are retargeted
+    at the survivor, their outgoing choices move to it, and they are deleted.
+    Serves both merge candidates and endings consolidation."""
+
+    into: int
+    passage_ids: list[int]
+
+
+class PlaytestRequest(BaseModel):
+    runs: int = Field(200, ge=1, le=10000)
+    max_steps: int = Field(200, ge=1, le=10000)
+    seed: int | None = None
+
+
+class Playtest(BaseModel):
+    """Coverage from ``engine.random_playthroughs``; counters are keyed by id."""
+
+    runs: int
+    mean_length: float
+    cut: int
+    visited: dict[int, int]
+    unvisited: list[int]
+    untaken: list[int]
+    endings: dict[int, int]
+    stuck: dict[int, int]
+    dangling: dict[int, int]

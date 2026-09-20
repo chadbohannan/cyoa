@@ -14,10 +14,11 @@ from typing import Any, AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import agents, db, engine, llm, runs
+from . import agents, db, engine, llm, runs, twee
 from .models import (
     AgentRun,
     AssistRequest,
@@ -30,13 +31,18 @@ from .models import (
     Lore,
     LoreCreate,
     LorePatch,
+    MergeRequest,
     Passage,
     PassageCreate,
     PassagePatch,
     PlayChoose,
     PlayStart,
     PlayView,
+    Playtest,
+    PlaytestRequest,
     Problems,
+    PromoteRequest,
+    PromoteResult,
     Proposal,
     RunCreate,
     RunResume,
@@ -388,6 +394,14 @@ def _variables(conn: sqlite3.Connection, story_id: int) -> list[dict[str, Any]]:
     return [_decode("variables", r) for r in conn.execute("SELECT * FROM variables WHERE story_id = ?", (story_id,))]
 
 
+def _passages(conn: sqlite3.Connection, story_id: int) -> list[dict[str, Any]]:
+    return [_decode("passages", r) for r in conn.execute("SELECT * FROM passages WHERE story_id = ? ORDER BY id", (story_id,))]
+
+
+def _choices(conn: sqlite3.Connection, story_id: int) -> list[dict[str, Any]]:
+    return [_decode("choices", r) for r in conn.execute("SELECT * FROM choices WHERE story_id = ? ORDER BY from_passage, sort_order, id", (story_id,))]
+
+
 @app.post("/api/stories/{story_id}/play/start")
 def play_start(story_id: int, body: PlayStart) -> PlayView:
     with db.transaction() as conn:
@@ -421,11 +435,79 @@ def play_choose(story_id: int, body: PlayChoose) -> PlayView:
 def story_problems(story_id: int) -> Problems:
     with db.transaction() as conn:
         story = _require_story(conn, story_id)
-        passages = conn.execute("SELECT id FROM passages WHERE story_id = ? ORDER BY id", (story_id,)).fetchall()
-        choices = [_decode("choices", r) for r in conn.execute("SELECT * FROM choices WHERE story_id = ?", (story_id,))]
-        return Problems(
-            **engine.problems(story["start_passage_id"], [dict(p) for p in passages], choices, _variables(conn, story_id))
+        passages, choices = _passages(conn, story_id), _choices(conn, story_id)
+        return Problems(**engine.problems(story["start_passage_id"], passages, choices, _variables(conn, story_id)))
+
+
+@app.post("/api/stories/{story_id}/playtest")
+def playtest(story_id: int, body: PlaytestRequest) -> Playtest:
+    """Random playthroughs through the same evaluator as the player; a coverage report, not a run."""
+    with db.transaction() as conn:
+        story = _require_story(conn, story_id)
+        if story["start_passage_id"] is None:
+            raise HTTPException(409, "story has no start passage")
+        return Playtest(
+            **engine.random_playthroughs(
+                story["start_passage_id"], _passages(conn, story_id), _choices(conn, story_id), _variables(conn, story_id),
+                runs=body.runs, max_steps=body.max_steps, seed=body.seed,
+            )
         )
+
+
+@app.get("/api/stories/{story_id}/export.twee", response_class=PlainTextResponse)
+def export_twee(story_id: int) -> PlainTextResponse:
+    with db.transaction() as conn:
+        story = _require_story(conn, story_id)
+        text = twee.export(dict(story), _passages(conn, story_id), _choices(conn, story_id), _variables(conn, story_id))
+    name = "".join(ch if ch.isalnum() or ch in "-_ " else "" for ch in story["title"]).strip() or "story"
+    return PlainTextResponse(text, media_type="text/plain; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}.twee"'})
+
+
+# --- promotion & merging -------------------------------------------------------
+#
+# Review is promotion: flipping `reviewed` over a branch at once rather than
+# passage by passage. Merging folds duplicate scenes (or a crowd of stub
+# endings) into one survivor; it is the one edit here that touches several
+# rows, so it is a route rather than a series of patches from the frontend.
+
+
+@app.post("/api/stories/{story_id}/promote")
+def promote(story_id: int, body: PromoteRequest) -> PromoteResult:
+    with db.transaction() as conn:
+        story = _require_story(conn, story_id)
+        ids = set(body.passage_ids)
+        if body.root is not None:
+            ids |= set(engine.subtree(body.root, story["start_passage_id"], _passages(conn, story_id), _choices(conn, story_id)))
+        marks = ", ".join("?" for _ in ids)
+        rows = conn.execute(f"SELECT id FROM passages WHERE story_id = ? AND id IN ({marks})", (story_id, *ids)).fetchall() if ids else []
+        found = sorted(r["id"] for r in rows)
+        if found:
+            conn.execute(f"UPDATE passages SET reviewed = ? WHERE story_id = ? AND id IN ({marks})", (int(body.reviewed), story_id, *ids))
+            db.touch_story(conn, story_id)
+        return PromoteResult(passage_ids=found)
+
+
+@app.post("/api/stories/{story_id}/passages/merge")
+def merge_passages(story_id: int, body: MergeRequest) -> Passage:
+    with db.transaction() as conn:
+        story = _require_story(conn, story_id)
+        others = [pid for pid in dict.fromkeys(body.passage_ids) if pid != body.into]
+        for pid in (body.into, *others):
+            if conn.execute("SELECT 1 FROM passages WHERE id = ? AND story_id = ?", (pid, story_id)).fetchone() is None:
+                raise HTTPException(404, f"passage {pid} not found")
+        if not others:
+            raise HTTPException(422, "nothing to merge")
+        marks = ", ".join("?" for _ in others)
+        conn.execute(f"UPDATE choices SET to_passage = ? WHERE story_id = ? AND to_passage IN ({marks})", (body.into, story_id, *others))
+        conn.execute(f"UPDATE choices SET from_passage = ? WHERE story_id = ? AND from_passage IN ({marks})", (body.into, story_id, *others))
+        # a choice from a merged passage that led back into the group is now a self-loop; drop it
+        conn.execute("DELETE FROM choices WHERE story_id = ? AND from_passage = ? AND to_passage = ?", (story_id, body.into, body.into))
+        if story["start_passage_id"] in others:
+            conn.execute("UPDATE stories SET start_passage_id = ? WHERE id = ?", (body.into, story_id))
+        conn.execute(f"DELETE FROM passages WHERE story_id = ? AND id IN ({marks})", (story_id, *others))
+        db.touch_story(conn, story_id)
+        row = conn.execute("SELECT * FROM passages WHERE id = ?", (body.into,)).fetchone()
+        return Passage(**_decode("passages", row))
 
 
 # --- assist & proposals --------------------------------------------------------

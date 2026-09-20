@@ -44,7 +44,8 @@ backend/                 # uv project (Python 3.12), FastAPI
 │   ├── main.py          # app, /api routes, `cyoa` console script (uvicorn on :8765)
 │   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, events, proposals, agent_runs)
 │   ├── models.py        # Pydantic shapes mirroring the tables
-│   ├── engine.py        # condition/effects evaluator, play state, problems checks
+│   ├── engine.py        # condition/effects evaluator, play state, problems checks, subtree, merge candidates, random playtest
+│   ├── twee.py          # Twee 3 / SugarCube export
 │   ├── agents.py        # LangGraph workflows: verbs, canon_check, expand_frontier; the model-call gate; RunHandle
 │   ├── runs.py          # background runs: threads, SQLite checkpoints (cyoa-agent.db), SSE log, resume/cancel
 │   └── llm.py           # model backend: CYOA_LLM=ollama|openai (llama-server :8080/v1 by default via make)
@@ -61,7 +62,7 @@ frontend/                # Vite + React + TypeScript
     ├── StoryCanvas.tsx  # editable React Flow map (activity highlight, subtree collapse)
     ├── Inspector.tsx    # passage / choice / story panels, variables table
     ├── clauses.tsx      # clause-row editors for condition / effects
-    ├── Player.tsx       # reader view: play/start, play/choose, debug drawer
+    ├── Player.tsx       # reader view: play/start, play/choose, debug drawer, random-playtest panel
     ├── Proposals.tsx    # assist toolbar, proposal list, Accept/Reject panel
     ├── RunDock.tsx      # run dock under the map: expand form, run rows (resume/stop/cancel/review)
     ├── AgentsView.tsx   # read-only workflow topology, current node, run state/history
