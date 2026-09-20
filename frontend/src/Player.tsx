@@ -1,0 +1,116 @@
+// The reader view. The server is stateless: each step is a PlayView it handed
+// back, and the frontend keeps a stack of them. Back pops, Restart clears, and
+// the debug drawer lets the author jump to any earlier step.
+
+import { useEffect, useState } from 'react'
+import { api, type Choice, type PlayView } from './api'
+import type { StoryStore } from './useStory'
+
+type Step = { view: PlayView; via: Choice | null }
+
+type Props = { store: StoryStore; from: number | null; onStop: () => void }
+
+export function Player({ store, from, onStop }: Props) {
+  const { graph, storyId } = store
+  const [steps, setSteps] = useState<Step[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // Restart bumps the nonce, which re-runs the initial load.
+  const [nonce, setNonce] = useState(0)
+  useEffect(() => {
+    let live = true
+    api.play
+      .start(storyId, from)
+      .then((view) => live && setSteps([{ view, via: null }]))
+      .catch((e) => live && setError((e as Error).message))
+    return () => {
+      live = false
+    }
+  }, [storyId, from, nonce])
+  function restart() {
+    setSteps([])
+    setError(null)
+    setNonce((n) => n + 1)
+  }
+
+  async function choose(c: Choice) {
+    const cur = steps[steps.length - 1]
+    if (!cur) return
+    setBusy(true)
+    setError(null)
+    try {
+      const view = await api.play.choose(storyId, c.id, cur.view.state)
+      setSteps((s) => [...s, { view, via: c }])
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cur = steps[steps.length - 1]
+  const isFromHere = from !== null && from !== graph?.story.start_passage_id
+
+  return (
+    <div className="player">
+      <div className="player-bar">
+        <button disabled={steps.length < 2 || busy} onClick={() => setSteps((s) => s.slice(0, -1))}>← Back</button>
+        <button disabled={busy} onClick={restart}>Restart</button>
+        {isFromHere && <button disabled={busy} onClick={onStop}>From the beginning</button>}
+        <span className="spacer" />
+        <span className="muted small">step {steps.length}</span>
+      </div>
+
+      {error && <p className="error">{error}</p>}
+      {cur && (
+        <article className="reader">
+          <h1>{cur.view.passage.title || <em>untitled</em>}</h1>
+          {cur.view.passage.body.split('\n').filter(Boolean).map((line, i) => <p key={i}>{line}</p>)}
+          <div className="choices">
+            {cur.view.choices.length === 0 && <p className="muted">The End.</p>}
+            {cur.view.choices.map((c) => (
+              <button key={c.id} className="choice" disabled={busy} onClick={() => choose(c)}>
+                {c.text || <em>untitled</em>}
+              </button>
+            ))}
+          </div>
+        </article>
+      )}
+
+      {cur && (
+        <details className="debug">
+          <summary>Debug</summary>
+          <div className="debug-grid">
+            <section>
+              <h4>State</h4>
+              <table className="vars">
+                <tbody>
+                  {Object.entries(cur.view.state).map(([k, v]) => (
+                    <tr key={k}><td><code>{k}</code></td><td><code>{JSON.stringify(v)}</code></td></tr>
+                  ))}
+                  {Object.keys(cur.view.state).length === 0 && <tr><td className="muted">no variables</td></tr>}
+                </tbody>
+              </table>
+              <h4>Last effects</h4>
+              <pre className="mono">{cur.via ? JSON.stringify(cur.via.effects) : '—'}</pre>
+            </section>
+            <section>
+              <h4>Path</h4>
+              <ol className="path">
+                {steps.map((s, i) => (
+                  <li key={i}>
+                    <button className="link" disabled={i === steps.length - 1} onClick={() => setSteps(steps.slice(0, i + 1))}>
+                      {s.view.passage.title || 'untitled'}
+                    </button>
+                    {s.via && <span className="muted small"> via “{s.via.text}”</span>}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}

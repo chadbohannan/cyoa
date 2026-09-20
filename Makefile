@@ -7,7 +7,11 @@ install: ## install backend (uv) and frontend (npm) deps
 	cd backend && uv sync
 	cd frontend && npm install
 
-backend: ## run FastAPI with reload on :8765 (CYOA_PORT)
+# CYOA_LLM=ollama (OLLAMA_URL) or openai (CYOA_OPENAI_URL, default a llama-server on :8080/v1)
+CYOA_LLM ?= openai
+export CYOA_LLM
+
+backend: ## run FastAPI with reload on :8765 (CYOA_PORT); model backend per CYOA_LLM
 	cd backend && uv run cyoa
 
 frontend: ## run Vite dev server on :5173 (proxies /api to :8765, CYOA_API)

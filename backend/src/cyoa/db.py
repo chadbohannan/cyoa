@@ -19,21 +19,32 @@ DB_PATH = Path(os.environ.get("CYOA_DB", "cyoa.db"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS stories (
-    id          INTEGER PRIMARY KEY,
-    title       TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id               INTEGER PRIMARY KEY,
+    title            TEXT NOT NULL,
+    description      TEXT NOT NULL DEFAULT '',
+    -- Treaty of Babel identifier, uuid4 assigned on create; survives export/import
+    ifid             TEXT NOT NULL,
+    -- the single entry passage; nullable so a story can exist before its map does
+    start_passage_id INTEGER REFERENCES passages(id) ON DELETE SET NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    -- bumped by every write to the story or any of its rows (Library "last edited")
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS passages (
-    id        INTEGER PRIMARY KEY,
-    story_id  INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-    title     TEXT NOT NULL,
-    body      TEXT NOT NULL DEFAULT '',
-    is_start  INTEGER NOT NULL DEFAULT 0,
+    id         INTEGER PRIMARY KEY,
+    story_id   INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
     -- editor layout hint; the graph editor owns these, the engine ignores them
-    pos_x     REAL NOT NULL DEFAULT 0,
-    pos_y     REAL NOT NULL DEFAULT 0
+    pos_x      REAL NOT NULL DEFAULT 0,
+    pos_y      REAL NOT NULL DEFAULT 0,
+    -- world layer: story-time clock and {"location", "present": [...], "events": [ids]}
+    t          REAL,
+    meta       TEXT NOT NULL DEFAULT '{}',
+    -- agents write directly where reviewed = 0 and must propose where reviewed = 1
+    reviewed   INTEGER NOT NULL DEFAULT 0,
+    provenance TEXT NOT NULL DEFAULT 'human' CHECK (provenance IN ('human', 'agent'))
 );
 
 CREATE TABLE IF NOT EXISTS choices (
@@ -43,9 +54,9 @@ CREATE TABLE IF NOT EXISTS choices (
     to_passage   INTEGER REFERENCES passages(id) ON DELETE SET NULL,
     text         TEXT NOT NULL,
     sort_order   INTEGER NOT NULL DEFAULT 0,
-    -- JSON: e.g. {"has_flag": "lantern"} / {"stat_gte": ["strength", 3]}
+    -- JSON: {"var": "brave", "op": "==", "value": true} | {"all": [...]} | {"any": [...]}
     condition    TEXT NOT NULL DEFAULT '{}',
-    -- JSON: e.g. {"set_flag": "lantern", "add_stat": ["gold", -5]}
+    -- JSON: {"set": {...}, "add": {...}, "give": [...], "take": [...]}
     effects      TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -57,6 +68,65 @@ CREATE TABLE IF NOT EXISTS variables (
     -- JSON default value: false for flags, a number for stats, a count for items
     "default" TEXT NOT NULL DEFAULT 'null',
     UNIQUE (story_id, name)
+);
+
+-- the story bible: what is true of the world regardless of branch
+CREATE TABLE IF NOT EXISTS lore (
+    id       INTEGER PRIMARY KEY,
+    story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    kind     TEXT NOT NULL CHECK (kind IN ('character', 'place', 'faction', 'rule')),
+    name     TEXT NOT NULL,
+    body     TEXT NOT NULL DEFAULT '',
+    reviewed INTEGER NOT NULL DEFAULT 0
+);
+
+-- the world timeline: what happens at each t on every branch
+CREATE TABLE IF NOT EXISTS events (
+    id       INTEGER PRIMARY KEY,
+    story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    t        REAL NOT NULL,
+    name     TEXT NOT NULL,
+    body     TEXT NOT NULL DEFAULT '',
+    reviewed INTEGER NOT NULL DEFAULT 0
+);
+
+-- what an agent wants to change; only accepting a proposal writes to the tables above.
+-- batch groups the proposals one assist call produced so they can be discarded together.
+CREATE TABLE IF NOT EXISTS proposals (
+    id             INTEGER PRIMARY KEY,
+    story_id       INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    batch          TEXT NOT NULL,
+    verb           TEXT NOT NULL,
+    kind           TEXT NOT NULL CHECK (kind IN ('new_passage', 'new_choice', 'edit_passage', 'edit_choice', 'new_variable', 'note')),
+    target_passage INTEGER REFERENCES passages(id) ON DELETE CASCADE,
+    target_choice  INTEGER REFERENCES choices(id) ON DELETE CASCADE,
+    -- JSON, shape depends on kind (see models.py)
+    payload        TEXT NOT NULL DEFAULT '{}',
+    status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+    -- the autonomous run that filed it, if any (assist verbs leave it null)
+    run_id         INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- an autonomous workflow run. thread_id is the LangGraph checkpoint key in the
+-- separate agent db (CYOA_AGENT_DB), so deleting cyoa.db still resets the story.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id         INTEGER PRIMARY KEY,
+    story_id   INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    workflow   TEXT NOT NULL,
+    thread_id  TEXT NOT NULL UNIQUE,
+    -- JSON: model, steer, ...
+    params     TEXT NOT NULL DEFAULT '{}',
+    -- JSON: passage ids the run was started from
+    scope      TEXT NOT NULL DEFAULT '[]',
+    -- JSON: {"max_passages", "depth", "max_seconds"}
+    budget     TEXT NOT NULL DEFAULT '{}',
+    status     TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'paused', 'done', 'failed', 'cancelled')),
+    -- JSON: {"created", "level", ...} as the run reports it
+    progress   TEXT NOT NULL DEFAULT '{}',
+    error      TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -87,3 +157,8 @@ def transaction(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+def touch_story(conn: sqlite3.Connection, story_id: int) -> None:
+    """Bump updated_at; call from every write that belongs to a story."""
+    conn.execute("UPDATE stories SET updated_at = datetime('now') WHERE id = ?", (story_id,))

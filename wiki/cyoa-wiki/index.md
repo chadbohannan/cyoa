@@ -4,8 +4,8 @@ The structured routing layer for the wiki. Each entry links to a page with a one
 
 ## Systems
 
-- [Backend](systems/backend.md) — the uv-managed FastAPI app: SQLite story store (`CYOA_DB`), `/api` routes, and the thin Ollama client for LLM-assisted authoring; port 8765 by default
-- [Frontend](systems/frontend.md) — the Vite/React/TypeScript app: typed `api.ts` gateway, `/api` dev proxy, and the read-only React Flow story canvas
+- [Backend](systems/backend.md) — the uv-managed FastAPI app: SQLite story store (`CYOA_DB`) with the phase-1 schema (`start_passage_id`, `ifid`, `updated_at`, world layer, lore/events), uniform CRUD routes for every table via shared helpers, the `engine.py` condition/effects evaluator behind the stateless `play/start` + `play/choose` routes and the `problems` validator, the `agents.py` LangGraph verb, `canon_check` and `expand_frontier` workflows writing proposals or agent passages, the `runs.py` manager (threads, SQLite checkpoints, SSE events, resume/cancel) behind the run routes, and the `ChatOllama` client with reasoning off behind one process-wide call gate; port 8765 by default
+- [Frontend](systems/frontend.md) — the Vite/React/TypeScript app: typed `api.ts` gateway, the per-story `useStory` store, autosaving fields, and the phase-1/2 surfaces — Library, editable React Flow map with search and problems overlay, inspector with clause-row condition/effects editors and variables, the Lore/timeline view, the Player with debug drawer and play-from-here, the assist toolbar, proposal ghost overlay, review panel and model picker, multi-select scoping, the run dock with activity highlights and subtree collapse, and the read-only Agents view
 
 ## Components
 
@@ -20,7 +20,7 @@ The structured routing layer for the wiki. Each entry links to a page with a one
 
 ## Incidents
 
-*(none yet)*
+- [Fan-out Exhausted the GPU](incidents/20260920-fanout-oom.md) — the first `canon_check` run sent six concurrent requests at Ollama and OOMed a 12 GB GPU; a process-wide call gate (default 1) replacing LangGraph's `max_concurrency`, which deadlocked streamed runs
 
 ## Runbooks
 

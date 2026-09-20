@@ -42,15 +42,31 @@ When updating wiki pages, maintain cross-references. Add links to the index for 
 backend/                 # uv project (Python 3.12), FastAPI
 ├── src/cyoa/
 │   ├── main.py          # app, /api routes, `cyoa` console script (uvicorn on :8765)
-│   ├── db.py            # SQLite schema (stories, passages, choices, variables)
+│   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, events, proposals, agent_runs)
 │   ├── models.py        # Pydantic shapes mirroring the tables
-│   └── llm.py           # thin Ollama client (OLLAMA_URL, OLLAMA_MODEL)
-└── tests/test_api.py
+│   ├── engine.py        # condition/effects evaluator, play state, problems checks
+│   ├── agents.py        # LangGraph workflows: verbs, canon_check, expand_frontier; the model-call gate; RunHandle
+│   ├── runs.py          # background runs: threads, SQLite checkpoints (cyoa-agent.db), SSE log, resume/cancel
+│   └── llm.py           # model backend: CYOA_LLM=ollama|openai (llama-server :8080/v1 by default via make)
+└── tests/               # test_api.py (routes), test_engine.py (evaluator), test_agents.py (verbs, runs; stubbed model)
 frontend/                # Vite + React + TypeScript
 └── src/
     ├── api.ts           # typed gateway to /api (proxied to the backend in dev)
-    ├── StoryCanvas.tsx  # React Flow rendering of a story graph
-    └── App.tsx          # story picker shell
+    ├── useStory.ts      # per-story graph store; every mutator patches local state
+    ├── useRuns.ts       # runs rows + SSE tail (activity, progress); composed into useStory
+    ├── store.ts         # guard() shared by the hooks
+    ├── fields.tsx       # autosaving TextField / TextArea / NumberField / JsonField
+    ├── App.tsx          # hash router: Library or StoryShell (Map / Lore / Play / Agents tabs)
+    ├── Library.tsx      # story cards
+    ├── StoryCanvas.tsx  # editable React Flow map (activity highlight, subtree collapse)
+    ├── Inspector.tsx    # passage / choice / story panels, variables table
+    ├── clauses.tsx      # clause-row editors for condition / effects
+    ├── Player.tsx       # reader view: play/start, play/choose, debug drawer
+    ├── Proposals.tsx    # assist toolbar, proposal list, Accept/Reject panel
+    ├── RunDock.tsx      # run dock under the map: expand form, run rows (resume/stop/cancel/review)
+    ├── AgentsView.tsx   # read-only workflow topology, current node, run state/history
+    ├── runs.ts          # run labels shared by the dock and Agents view
+    └── LoreView.tsx     # lore entries and events timeline
 Makefile                 # install / backend / frontend / test / lint-wiki
 ```
 
