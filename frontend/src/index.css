@@ -135,7 +135,9 @@ button.primary { border-color: var(--accent); background: color-mix(in srgb, var
 select.model { width: auto; max-width: 16rem; }
 .issues { list-style: none; padding: 0; margin: 0.25rem 0; }
 .issues li { padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
-.badge.major { color: var(--danger); border-color: var(--danger); }
+.badge.major, .badge.unresolved { color: var(--danger); border-color: var(--danger); }
+.audit-flag summary { cursor: pointer; color: var(--danger); }
+.audit-flag { margin: 0.4rem 0; }
 
 /* runs: activity on the map, the dock, and the Agents view */
 .map-column { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -157,9 +159,19 @@ input.steer { flex: 1; min-width: 12rem; }
 .badge.paused { color: #b58900; border-color: #b58900; }
 .badge.failed, .badge.cancelled { color: var(--danger); border-color: var(--danger); }
 .agents { display: flex; height: 100%; }
-.agents-side { width: 22rem; border-right: 1px solid var(--line); overflow-y: auto; padding: 0.5rem 0.75rem; }
+.agents-side { width: 16rem; border-right: 1px solid var(--line); overflow-y: auto; padding: 0.5rem 0.75rem; }
 .agents-side button.link.active { font-weight: 600; }
 .agents-canvas { flex: 1; min-width: 0; }
+.agents-inspector { width: 30rem; border-left: 1px solid var(--line); overflow-y: auto; padding: 0.5rem 0.75rem; }
+.agents-inspector details { margin: 0.2rem 0; }
+.agents-inspector summary { cursor: pointer; }
+.agents-inspector .row { margin: 0.4rem 0; }
+textarea.prompt-text { min-height: 12rem; }
+pre.preview { font-size: 0.75em; max-height: 28rem; overflow: auto; background: color-mix(in srgb, CanvasText 5%, transparent); padding: 0.4rem; border-radius: 4px; white-space: pre-wrap; }
+dl.params { display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 0.6rem; margin: 0.25rem 0; }
+dl.params dd { margin: 0; overflow-wrap: anywhere; }
+.badge.edited { color: var(--accent); border-color: var(--accent); }
+.step-card.selected { background: color-mix(in srgb, var(--accent) 18%, Canvas); }
 .step-card { padding: 0.4rem 0.8rem; border: 1px solid #8888; border-radius: 999px; background: Canvas; color: CanvasText; font-size: 12px; font-family: ui-monospace, monospace; }
 .step-card.terminal { border-style: dashed; color: var(--muted); }
 .step-card.next { border-color: #b58900; }

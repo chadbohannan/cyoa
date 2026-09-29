@@ -15,18 +15,23 @@ The structured routing layer for the wiki. Each entry links to a page with a one
 
 - [Story Model](concepts/story-model.md) — passages, choices, and variables as a digraph in SQLite; JSON `condition`/`effects` on choices as the mechanism for an evolving vocabulary; what is deliberately not modeled yet
 - [Interchange Formats](concepts/interchange-formats.md) — how our tables map onto Twee 3, Twison JSON and ink; why Twee is the first import/export target; the recommendation to adopt IFIDs
-- [Agentic Authoring](concepts/agentic-authoring.md) — how agents act on the story: story graph vs. LangGraph workflow graph, a tool layer as the only path to the story, the reviewed/frontier rule, the story clock (`t`, `lore`, `events`) that keeps fan-out storylines coherent without merging; proposals and runs tables, `canon_check` then `expand_frontier`, the structured-output spike; owns the project's single phase list; open questions kept separate from decisions
+- [Agentic Authoring](concepts/agentic-authoring.md) — how agents act on the story: story graph vs. LangGraph workflow graph, a tool layer as the only path to the story, the reviewed/frontier rule, the story clock (`t`, `lore`, `events`) that keeps fan-out storylines coherent without merging; proposals and runs tables, `canon_check` then `expand_frontier`, the structured-output spike; the handoff architecture enabling the vision of "human-operated but fully automatable" (manual → assisted → automated); owns the project's phase list (1–6 done, 7a–7b for automation)
+- [Choice Anchoring and Narrative Coherence](concepts/choice-anchoring.md) — a proposed resolution to the tension between multi-timeline branching and narrative coherence: every choice declares what world-fact it is anchored to, creating constraints on other branches and funneling the frontier toward conclusions; scoped design (not yet built)
+- [Refinement Loops](concepts/refinement-loops.md) — scoped design (2026-09-28, not built): every generation step becomes draft → validate → audit → revise, with auditors as prompt roles, quote-verified issues, an `audits` table, a `refine` run policy that puts story quality first (converge-or-plateau stopping, restarts, best-of-N, audit votes, reasoning auditors) with time only as a guard, and an R0–R4 build order measured by the storyline eval
 - [The Webapp UI](concepts/webapp-ui.md) — scope for the local create/edit/play app: library, editable map with inspector panel, stateless server-driven player with debug drawer, per-passage LLM verbs; the backend as sole owner of condition/effects semantics and the first condition/effects vocabulary; `start_passage_id`, `ifid`, `updated_at` and WAL storage changes
 
 ## Incidents
 
+- [Unattended Runs Stopped After One Level](incidents/2026-09-28-skip-review-stopped-after-one-level.md) — `skip_review_interrupt` routed `after_gather` to `finish`, so unattended `expand_frontier` runs grew one level regardless of depth; the skip moved into `review`, pinned by a test
 - [Fan-out Exhausted the GPU](incidents/20260920-fanout-oom.md) — the first `canon_check` run sent six concurrent requests at Ollama and OOMed a 12 GB GPU; a process-wide call gate (default 1) replacing LangGraph's `max_concurrency`, which deadlocked streamed runs
 
 ## Runbooks
 
 - [Running the Dev Loop](runbooks/dev-loop.md) — `make backend` / `make frontend`, the env vars for ports and Ollama, resetting the database, `make test`
+- [Evaluating Generated Storylines](runbooks/storyline-eval.md) — `make eval`: a private backend grows seeded premises unattended and renders every root-to-leaf storyline as prose for a consistency read, with an optional model judge
 
 ## Syntheses
 
 - [The Free CYOA Community](syntheses/community-landscape.md) — survey of free story corpora (Project Aon, itch.io, Choice of Games), the de-facto formats (Twee 3, ink, ChoiceScript, Treaty of Babel), structural research on classic books, and what is reusable here
 - [Editor UX Survey](syntheses/editor-ux-survey.md) — patterns from Twine, Inky, Arcweave, Yarn Spinner, CSIDE and AI writing tools, and which ones the webapp adopts
+- [Storyline Generation Quality](syntheses/storyline-generation-quality.md) — synthesis of four `expand_frontier` eval runs (2026-09-28): what code-only retries, full-path spine context and budget-by-shape (`depth`+`branching`) fixed versus their limits, a model-swap run (Qwen 3.8 27B Bonsai-2 ternary → Gemma-4 12B) isolating code-level guarantees from model-specific pacing/retry-rate/speed, a new literal-escape-sequence defect, and six concrete proposals for refinement-loops' auditors and the eval harness

@@ -171,13 +171,36 @@ def test_play_and_problems(client):
         "unreachable": [island["id"]],
         "dangling": [dangle["id"]],
         "undeclared": [{"choice_id": dangle["id"], "var": "shovel"}],
-        "endings": [island["id"]],
+        "endings": [],
+        "unfinished": [island["id"]],
         "merge_candidates": [],
     }
 
     c.delete(f"{base}/passages/{start}")
     assert c.post(f"{base}/play/start", json={}).status_code == 409
     assert c.get(f"{base}/problems").json()["no_start"] is True
+
+
+def test_is_ending_overrides_choices_at_play(client):
+    """A decided ending shows no choices at play even if some are still attached
+    to the row (e.g. left over from before it was marked); problems() and the
+    edit_passage proposal shape agree with that."""
+    c = client
+    s = c.post("/api/stories", json={"title": "Grave"}).json()
+    base, start = f"/api/stories/{s['id']}", s["start_passage_id"]
+    stub = c.post(f"{base}/passages", json={"title": "Stub"}).json()
+    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": stub["id"], "text": "Go"})
+    c.post(f"{base}/choices", json={"from_passage": stub["id"], "to_passage": start, "text": "Back"})
+
+    p = c.get(f"{base}/problems").json()
+    assert p["endings"] == [] and p["unfinished"] == []  # Stub still has a choice, isn't a dead end
+
+    assert c.patch(f"{base}/passages/{stub['id']}", json={"is_ending": True}).json()["is_ending"] is True
+    p = c.get(f"{base}/problems").json()
+    assert p["endings"] == [stub["id"]] and p["unfinished"] == []
+
+    v = c.post(f"{base}/play/choose", json={"choice_id": c.get(f"{base}/graph").json()["choices"][0]["id"], "state": {}}).json()
+    assert v["passage"]["id"] == stub["id"] and v["choices"] == []  # the stored "Back" choice is ignored
 
 
 def _chain(c, base, start, titles, **passage):

@@ -32,7 +32,7 @@ from typing import Any
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from . import agents, db
+from . import agents, db, prompts
 
 AGENT_DB_PATH = Path(os.environ.get("CYOA_AGENT_DB", "cyoa-agent.db"))
 TERMINAL = {"done", "failed", "cancelled"}
@@ -89,17 +89,22 @@ class Manager:
 
     # --- lifecycle -------------------------------------------------------------
 
-    def start(self, story_id: int, workflow: str, scope: list[int], params: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any]:
+    def start(self, story_id: int, workflow: str, scope: list[int], params: dict[str, Any], budget: dict[str, Any], policy: dict[str, Any] | None = None) -> dict[str, Any]:
         build, make_input = agents.WORKFLOWS[workflow]
+        # The run asks with the roles as they are now, for its whole life: resuming
+        # after a prompt edit keeps the snapshot, and the row records what was used.
+        params = {**params, "prompts": prompts.resolve()}
         inp = make_input(story_id, scope, params, budget)
         thread_id = uuid.uuid4().hex
+        policy = policy or {}
         with db.transaction() as conn:
             cur = conn.execute(
-                "INSERT INTO agent_runs (story_id, workflow, thread_id, params, scope, budget) VALUES (?, ?, ?, ?, ?, ?)",
-                (story_id, workflow, thread_id, json.dumps(params), json.dumps(scope), json.dumps(inp.get("budget", budget))),
+                "INSERT INTO agent_runs (story_id, workflow, thread_id, params, scope, budget, policy) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (story_id, workflow, thread_id, json.dumps(params), json.dumps(scope), json.dumps(inp.get("budget", budget)), json.dumps(policy)),
             )
             run_id = cur.lastrowid
         inp["run_id"] = run_id
+        inp["policy"] = policy
         self._launch(run_id, workflow, thread_id, inp)
         return self.get(run_id)
 
@@ -193,7 +198,7 @@ class Manager:
     @staticmethod
     def _decode(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        for col in ("params", "scope", "budget", "progress"):
+        for col in ("params", "scope", "budget", "policy", "progress"):
             d[col] = json.loads(d[col])
         d["pending_proposals"] = conn.execute(
             "SELECT COUNT(*) FROM proposals WHERE run_id = ? AND status = 'pending'", (d["id"],)

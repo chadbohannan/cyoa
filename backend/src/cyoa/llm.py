@@ -37,14 +37,19 @@ def list_models() -> list[str]:
     return [m.model for m in ollama.Client(host=OLLAMA_URL, timeout=5).list().models if m.model]
 
 
-def chat_model(model: str | None = None, *, temperature: float = 0.8):
+def chat_model(model: str | None = None, *, temperature: float = 0.8, reasoning: bool = False):
+    """`reasoning=True` is for refinement's auditors (refinement-loops.md): judgment
+    benefits from thinking even though drafting turns it off everywhere else. On
+    llama-server this is unverified — the chat template's thinking switch, exposed
+    as `extra_body`; check structured output still parses before relying on it."""
     if BACKEND == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model or DEFAULT_MODEL, base_url=OPENAI_URL, api_key="none", temperature=temperature)
+        kw = {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}} if reasoning else {}
+        return ChatOpenAI(model=model or DEFAULT_MODEL, base_url=OPENAI_URL, api_key="none", temperature=temperature, **kw)
     from langchain_ollama import ChatOllama
 
-    return ChatOllama(model=model or DEFAULT_MODEL, base_url=OLLAMA_URL, temperature=temperature, reasoning=False)
+    return ChatOllama(model=model or DEFAULT_MODEL, base_url=OLLAMA_URL, temperature=temperature, reasoning=reasoning)
 
 
 def structured_method() -> str:

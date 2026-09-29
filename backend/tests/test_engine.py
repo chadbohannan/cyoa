@@ -30,7 +30,7 @@ def test_vars_and_problems():
     assert engine.condition_vars(cond) == {"a", "b"}
     assert engine.effect_vars({"set": {"x": 1}, "give": ["y"], "take": ["z"], "add": {"w": 1}}) == {"w", "x", "y", "z"}
 
-    passages = [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}]
+    passages = [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4, "is_ending": True}]
     choices = [
         {"id": 10, "from_passage": 1, "to_passage": 2, "condition": {}, "effects": {"set": {"seen": True}}},
         {"id": 11, "from_passage": 2, "to_passage": None, "condition": {"var": "ghost", "op": "==", "value": 1}, "effects": {}},
@@ -43,10 +43,28 @@ def test_vars_and_problems():
         "dangling": [11],
         "undeclared": [{"choice_id": 11, "var": "ghost"}],
         "endings": [4],
+        "unfinished": [],
         "merge_candidates": [],
     }
     assert engine.problems(None, passages, choices, [])["no_start"] is True
     assert engine.problems(None, passages, choices, [])["unreachable"] == [1, 2, 3, 4]
+
+
+def test_endings_vs_unfinished():
+    """A decided ending and a stub both have no outgoing choices, but only the
+    is_ending one counts as an ending; the other is unfinished, not a problem
+    to gloss over. random_playthroughs draws the same line at play time."""
+    passages = [{"id": 1, "is_ending": False}, {"id": 2, "is_ending": True}, {"id": 3}]
+    choices = [
+        {"id": 1, "from_passage": 1, "to_passage": 2, "condition": {}, "effects": {}},
+        {"id": 2, "from_passage": 1, "to_passage": 3, "condition": {}, "effects": {}},
+    ]
+    p = engine.problems(1, passages, choices, [])
+    assert p["endings"] == [2] and p["unfinished"] == [3]
+
+    r = engine.random_playthroughs(1, passages, choices, [], runs=50, seed=1)
+    assert set(r["endings"]) <= {2} and set(r["unfinished"]) <= {3}
+    assert r["endings"].get(2, 0) + r["unfinished"].get(3, 0) == 50
 
 
 def test_subtree_stops_at_shared_passages():

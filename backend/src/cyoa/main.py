@@ -10,15 +10,17 @@ import os
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agents, db, engine, llm, runs, twee
+from . import agents, db, engine, llm, prompts, runs, twee
 from .models import (
     AgentRun,
     AssistRequest,
@@ -43,6 +45,10 @@ from .models import (
     Problems,
     PromoteRequest,
     PromoteResult,
+    PromptInfo,
+    PromptPreview,
+    PromptPreviewRequest,
+    PromptUpdate,
     Proposal,
     RunCreate,
     RunResume,
@@ -80,38 +86,14 @@ def health() -> dict:
 # columns stored as JSON text so they are encoded on the way in and decoded on
 # the way out; everything else passes through unchanged.
 
-JSON_COLS: dict[str, set[str]] = {
-    "passages": {"meta"},
-    "choices": {"condition", "effects"},
-    "variables": {"default"},
-    "lore": set(),
-    "events": set(),
-    "proposals": {"payload"},
-}
+# Row helpers moved to engine.py for sharing with agents
+_decode = engine.decode_row
+_encode = engine.encode_values
+JSON_COLS = engine.JSON_COLS
 
 
-def _decode(table: str, row: sqlite3.Row) -> dict[str, Any]:
-    d = dict(row)
-    for col in JSON_COLS[table]:
-        d[col] = json.loads(d[col])
-    return d
-
-
-def _encode(table: str, values: dict[str, Any]) -> dict[str, Any]:
-    return {k: json.dumps(v) if k in JSON_COLS[table] else v for k, v in values.items()}
-
-
-def _insert(conn: sqlite3.Connection, table: str, story_id: int, values: dict[str, Any]) -> dict[str, Any]:
-    _require_story(conn, story_id)
-    values = _encode(table, {"story_id": story_id, **values})
-    cols = ", ".join(f'"{k}"' for k in values)
-    marks = ", ".join("?" for _ in values)
-    try:
-        cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
-    except sqlite3.IntegrityError as e:
-        raise HTTPException(409, str(e))
-    db.touch_story(conn, story_id)
-    return _decode(table, conn.execute(f"SELECT * FROM {table} WHERE id = ?", (cur.lastrowid,)).fetchone())
+# _insert moved to engine.py for sharing with agents
+_insert = engine.insert_row
 
 
 def _update(conn: sqlite3.Connection, table: str, story_id: int, row_id: int, patch: BaseModel) -> dict[str, Any]:
@@ -377,6 +359,11 @@ def _view(conn: sqlite3.Connection, story_id: int, passage_id: int, state: engin
     row = conn.execute("SELECT * FROM passages WHERE id = ? AND story_id = ?", (passage_id, story_id)).fetchone()
     if row is None:
         raise HTTPException(404, "passage not found")
+    passage = Passage(**_decode("passages", row))
+    # is_ending is authoritative: a decided ending shows no choices even if some
+    # are still attached to the row (e.g. left over from before it was marked).
+    if passage.is_ending:
+        return PlayView(passage=passage, choices=[], state=state)
     choices = [
         _decode("choices", r)
         for r in conn.execute(
@@ -384,7 +371,7 @@ def _view(conn: sqlite3.Connection, story_id: int, passage_id: int, state: engin
         ).fetchall()
     ]
     return PlayView(
-        passage=Passage(**_decode("passages", row)),
+        passage=passage,
         choices=[Choice(**c) for c in choices if engine.check(c["condition"], state)],
         state=state,
     )
@@ -566,30 +553,8 @@ def _pending(conn: sqlite3.Connection, story_id: int, proposal_id: int) -> dict[
     return _decode("proposals", row)
 
 
-def _materialise(conn: sqlite3.Connection, story_id: int, p: dict[str, Any]) -> None:
-    """Write the rows a proposal describes. The one place proposal kinds become tables."""
-    kind, pl = p["kind"], p["payload"]
-    if kind == "edit_passage":
-        conn.execute("UPDATE passages SET body = ? WHERE id = ? AND story_id = ?", (pl["body"], p["target_passage"], story_id))
-    elif kind == "edit_choice":
-        conn.execute("UPDATE choices SET text = ? WHERE id = ? AND story_id = ?", (pl["text"], p["target_choice"], story_id))
-    elif kind == "new_passage":
-        new = _insert(conn, "passages", story_id, {"title": pl["title"], "body": pl["body"], "pos_x": pl.get("pos_x", 0),
-                                                   "pos_y": pl.get("pos_y", 0), "provenance": "agent"})
-        if p["target_choice"] is not None:
-            conn.execute("UPDATE choices SET to_passage = ? WHERE id = ? AND to_passage IS NULL", (new["id"], p["target_choice"]))
-    elif kind == "new_choice":
-        to = pl.get("to_passage")
-        if to is None and pl.get("new_target"):
-            t = pl["new_target"]
-            to = _insert(conn, "passages", story_id, {"title": t["title"], "body": t.get("body", ""), "pos_x": t.get("pos_x", 0),
-                                                     "pos_y": t.get("pos_y", 0), "provenance": "agent"})["id"]
-        order = conn.execute("SELECT COALESCE(MAX(sort_order) + 1, 0) FROM choices WHERE from_passage = ?", (p["target_passage"],)).fetchone()[0]
-        _insert(conn, "choices", story_id, {"from_passage": p["target_passage"], "to_passage": to, "text": pl["text"], "sort_order": order,
-                                            "condition": {}, "effects": {}})
-    elif kind == "new_variable":
-        _insert(conn, "variables", story_id, {"name": pl["name"], "kind": pl["kind"], "default": pl.get("default")})
-    # 'note' materialises nothing; accepting it just files it away
+# _materialise moved to engine.py for sharing with agents
+_materialise = engine.materialise
 
 
 @app.post("/api/stories/{story_id}/proposals/{proposal_id}/accept")
@@ -647,7 +612,7 @@ def start_run(story_id: int, body: RunCreate) -> AgentRun:
         if body.workflow == "canon_check" and not _has_world(conn, story_id):
             raise HTTPException(422, "nothing to check against: the story has no lore or events")
     try:
-        row = runs.manager.start(story_id, body.workflow, scope, {"model": body.model, "steer": body.steer}, body.budget)
+        row = runs.manager.start(story_id, body.workflow, scope, {"model": body.model, "steer": body.steer}, body.budget, body.policy)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return AgentRun(**row)
@@ -705,5 +670,84 @@ def agent_workflows() -> dict[str, Any]:
     return agents.workflow_json()
 
 
+# --- prompts -------------------------------------------------------------------
+#
+# Prompt roles are global: one text per kind of model call, for every story
+# (prompts.py). The story in the preview route only supplies a passage to
+# assemble the context frame from.
+
+
+def _prompt_info(key: str, overrides: dict[str, str]) -> PromptInfo:
+    p = prompts.PROMPTS[key]
+    return PromptInfo(key=key, label=p.label, doc=p.doc, placeholders=list(p.placeholders),
+                      used_by=[wn for wn, keys in agents.NODE_PROMPTS.items() if key in keys],
+                      default=p.default, override=overrides.get(key))
+
+
+def _require_prompt(key: str) -> None:
+    if key not in prompts.PROMPTS:
+        raise HTTPException(404, f"unknown prompt {key!r}")
+
+
+@app.get("/api/agents/prompts")
+def list_prompts() -> list[PromptInfo]:
+    overrides = prompts.overrides()
+    return [_prompt_info(k, overrides) for k in prompts.PROMPTS]
+
+
+@app.put("/api/agents/prompts/{key}")
+def save_prompt(key: str, body: PromptUpdate) -> PromptInfo:
+    _require_prompt(key)
+    try:
+        prompts.save(key, body.text)
+    except prompts.PromptError as e:
+        raise HTTPException(422, str(e))
+    return _prompt_info(key, prompts.overrides())
+
+
+@app.delete("/api/agents/prompts/{key}")
+def reset_prompt(key: str) -> PromptInfo:
+    _require_prompt(key)
+    prompts.reset(key)
+    return _prompt_info(key, prompts.overrides())
+
+
+@app.post("/api/stories/{story_id}/prompts/{key}/preview")
+def preview_prompt(story_id: int, key: str, body: PromptPreviewRequest) -> PromptPreview:
+    """The exact text `agents.compose` would send for this passage, without the model.
+    {choice} is the passage's first outgoing choice, {tone} the rewrite verb's default, and
+    {branching}/{remaining} what a default expand run's first level would use."""
+    _require_prompt(key)
+    with db.transaction() as conn:
+        _require_story(conn, story_id)
+        _require_passage(conn, story_id, body.passage_id)
+    roles = prompts.resolve()
+    if body.text is not None:
+        try:
+            prompts.validate(key, body.text)
+        except prompts.PromptError as e:
+            raise HTTPException(422, str(e))
+        roles[key] = body.text
+    ctx = agents.gather_context({"story_id": story_id, "passage_id": body.passage_id, "params": {}})["context"]
+    choice = ctx["outgoing"][0]["text"] if ctx["outgoing"] else "(example choice)"
+    # frontier pacing placeholders as a default expand run's first level would fill them
+    b = agents.DEFAULT_BUDGET
+    return PromptPreview(prompt=agents.compose(ctx, roles, key, choice=choice, tone="vivid",
+                                               branching=str(b["branching"]), remaining=str(b["depth"])))
+
+
+# --- built frontend (make serve) ---------------------------------------------
+#
+# All API routes are under /api, so mounting the Vite build at "/" is safe: FastAPI
+# tries the routes above first and only falls through to static files (and, via
+# html=True, to index.html for any unmatched path) otherwise. The app uses a hash
+# router, so index.html alone covers every client-side route. Mounted last so it
+# never shadows an /api route; absent in dev, where Vite serves the frontend itself.
+_FRONTEND_DIST = Path(os.environ.get("CYOA_FRONTEND_DIST", Path(__file__).resolve().parents[3] / "frontend" / "dist"))
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
+
+
 def run() -> None:
-    uvicorn.run("cyoa.main:app", host="127.0.0.1", port=int(os.environ.get("CYOA_PORT", "8765")), reload=True)
+    reload = os.environ.get("CYOA_RELOAD", "1") not in ("0", "false", "False")
+    uvicorn.run("cyoa.main:app", host="127.0.0.1", port=int(os.environ.get("CYOA_PORT", "8765")), reload=reload)

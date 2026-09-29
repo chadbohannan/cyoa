@@ -3,9 +3,32 @@
 // writes to the story; everything here is otherwise read-only.
 
 import { useState } from 'react'
-import type { AssistVerb, Passage, Proposal } from './api'
+import type { AssistVerb, AuditMeta, Passage, Proposal } from './api'
 import type { Selection } from './StoryCanvas'
 import type { StoryStore } from './useStory'
+
+// A refinement pass that gave up with issues still open (agents.DEFAULT_REFINE's
+// on_unresolved: 'keep_flagged') — shown wherever the flag can land: a passage's own
+// meta.audit, or a new_choice proposal's payload.audit for its not-yet-created target.
+export function AuditFlag({ audit }: { audit: AuditMeta }) {
+  return (
+    <details className="audit-flag">
+      <summary>
+        <span className="badge unresolved">unresolved</span>
+        {' '}refinement gave up after {audit.rounds} round{audit.rounds === 1 ? '' : 's'} with {audit.issues.length}
+        {' '}issue{audit.issues.length === 1 ? '' : 's'} still open
+      </summary>
+      <ul className="issues">
+        {audit.issues.map((i, n) => (
+          <li key={n}>
+            <span className={`badge ${i.severity}`}>{i.severity}</span> {i.problem}
+            <div className="muted small">“{i.quote}”{i.evidence && <> — {i.evidence}</>}</div>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
 
 const TONES = ['vivid', 'grim', 'playful', 'terse', 'lyrical']
 
@@ -14,16 +37,19 @@ const VERB_LABEL: Record<AssistVerb | 'canon_check', string> = {
   suggest_choices: 'Suggest choices',
   draft_target: 'Draft target',
   rewrite: 'Rewrite',
+  suggest_next: 'Suggest next step',
   canon_check: 'Canon check',
 }
 
-// The three passage verbs. Draft target lives on the dangling choice instead.
-export function AssistToolbar({ passage, store, onSelect }: { passage: Passage; store: StoryStore; onSelect: (s: Selection) => void }) {
+// The four passage verbs. Draft target lives on the dangling choice instead.
+export function AssistToolbar({ passage, hasChoices, store, onSelect }: {
+  passage: Passage; hasChoices: boolean; store: StoryStore; onSelect: (s: Selection) => void
+}) {
   const [tone, setTone] = useState(TONES[0])
-  const busy = store.busy
+  const busy = store.busy[passage.id]
   const run = async (verb: AssistVerb) => {
     const rows = await store.assist(passage.id, { verb, tone: verb === 'rewrite' ? tone : null })
-    if (rows?.length === 1) onSelect({ kind: 'proposal', id: rows[0].id })
+    if (rows?.[0]) onSelect({ kind: 'proposal', id: rows[0].id })
   }
   return (
     <div className="assist">
@@ -32,6 +58,13 @@ export function AssistToolbar({ passage, store, onSelect }: { passage: Passage; 
         <button disabled={!!busy} onClick={() => run('draft_body')}>{VERB_LABEL.draft_body}</button>
         <button disabled={!!busy} onClick={() => run('suggest_choices')}>{VERB_LABEL.suggest_choices}</button>
         <button disabled={!!busy || !passage.body.trim()} onClick={() => run('rewrite')}>{VERB_LABEL.rewrite}</button>
+        <button
+          disabled={!!busy || !passage.body.trim() || hasChoices}
+          title={hasChoices ? 'Only for a passage with no choices yet' : 'Suggest branching into choices, continuing on one path, or ending here'}
+          onClick={() => run('suggest_next')}
+        >
+          {VERB_LABEL.suggest_next}
+        </button>
         <select value={tone} onChange={(e) => setTone(e.target.value)} className="narrow" title="tone for Rewrite">
           {TONES.map((t) => <option key={t}>{t}</option>)}
         </select>
@@ -59,9 +92,9 @@ export function ProposalList({ proposals, onSelect }: { proposals: Proposal[]; o
 function summary(q: Proposal): string {
   const pl = q.payload
   switch (q.kind) {
-    case 'edit_passage': return `${q.verb === 'rewrite' ? 'Rewrite' : 'Body'}: ${excerpt(pl.body)}`
+    case 'edit_passage': return pl.is_ending !== undefined ? 'Mark as ending' : `${q.verb === 'rewrite' ? 'Rewrite' : 'Body'}: ${excerpt(pl.body)}`
     case 'new_passage': return `New passage “${pl.title}”`
-    case 'new_choice': return `Choice “${pl.text}” → ${pl.new_target ? `new “${pl.new_target.title}”` : 'existing passage'}`
+    case 'new_choice': return `Choice “${pl.text}” → ${pl.new_target ? `new “${pl.new_target.title}”` : 'existing passage'}${pl.audit ? ' ⚠ unresolved' : ''}`
     case 'edit_choice': return `Choice text: ${pl.text}`
     case 'new_variable': return `Variable ${pl.name} (${pl.kind})`
     default: return pl.issues?.length ? `${pl.issues.length} canon issue${pl.issues.length > 1 ? 's' : ''}` : excerpt(pl.text) || 'note'
@@ -77,13 +110,22 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
   const siblings = graph.proposals.filter((x) => x.batch === q.batch && x.id !== q.id)
   const back: Selection = passage ? { kind: 'passage', id: passage.id } : null
 
+  // Every pending proposal in the story, in creation order: Prev/Next step through this
+  // queue so a review pass never has to detour back through a passage panel, and Accept
+  // / Reject land on whatever now occupies this slot instead of always exiting to it.
+  const queue = [...graph.proposals].sort((a, b) => a.id - b.id)
+  const pos = queue.findIndex((x) => x.id === q.id)
+  const prevQ = pos > 0 ? queue[pos - 1] : null
+  const nextQ = pos >= 0 && pos < queue.length - 1 ? queue[pos + 1] : null
+  const after: Selection = nextQ ? { kind: 'proposal', id: nextQ.id } : prevQ ? { kind: 'proposal', id: prevQ.id } : back
+
   const accept = async () => {
     await store.acceptProposal(q.id)
-    onSelect(back)
+    onSelect(after)
   }
   const reject = async () => {
     await store.rejectProposal(q.id)
-    onSelect(siblings[0] ? { kind: 'proposal', id: siblings[0].id } : back)
+    onSelect(after)
   }
   const discardAll = async () => {
     await store.rejectBatch(q.batch)
@@ -108,6 +150,11 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
         <button className="primary" onClick={accept}>Accept</button>
         <button onClick={reject}>Reject</button>
       </div>
+      <div className="row">
+        <button className="icon" disabled={!prevQ} onClick={() => prevQ && onSelect({ kind: 'proposal', id: prevQ.id })} title="Previous pending proposal">‹ Prev</button>
+        {pos >= 0 && <span className="muted small">{pos + 1} of {queue.length} pending</span>}
+        <button className="icon" disabled={!nextQ} onClick={() => nextQ && onSelect({ kind: 'proposal', id: nextQ.id })} title="Next pending proposal">Next ›</button>
+      </div>
       <p className="muted small">
         {VERB_LABEL[q.verb as keyof typeof VERB_LABEL] ?? q.verb}
         {passage && <> on <button className="link" onClick={() => onSelect({ kind: 'passage', id: passage.id })}>{passage.title}</button></>}
@@ -115,10 +162,17 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
       </p>
 
       {q.kind === 'edit_passage' && passage && (
-        <>
-          <label>Current<div className="proposal-text muted">{passage.body || <em>empty</em>}</div></label>
-          <label>Proposed<div className="proposal-text">{pl.body}</div></label>
-        </>
+        pl.is_ending !== undefined ? (
+          <>
+            <p className="small">Mark <strong>{passage.title}</strong> as a decided ending. {pl.reasoning}</p>
+            <p className="muted small">The reader will see no choices here once accepted, whatever is listed on the passage.</p>
+          </>
+        ) : (
+          <>
+            <label>Current<div className="proposal-text muted">{passage.body || <em>empty</em>}</div></label>
+            <label>Proposed<div className="proposal-text">{pl.body}</div></label>
+          </>
+        )
       )}
       {q.kind === 'new_passage' && (
         <>
@@ -136,6 +190,7 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
               ? <>a new passage <strong>“{pl.new_target.title}”</strong> (created empty on accept)</>
               : <strong>{graph.passages.find((p) => p.id === pl.to_passage)?.title ?? '?'}</strong>}
           </p>
+          {pl.audit && <AuditFlag audit={pl.audit} />}
         </>
       )}
       {q.kind === 'edit_choice' && <div className="proposal-text">{pl.text}</div>}
@@ -161,7 +216,7 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
       {q.kind === 'new_variable' && <div className="proposal-text">{pl.name} · {pl.kind} · default {JSON.stringify(pl.default)}</div>}
 
       <div className="row" style={{ marginTop: '0.75rem' }}>
-        <button disabled={!!store.busy || !passage} onClick={regenerate}>Regenerate</button>
+        <button disabled={!passage || !!store.busy[passage.id]} onClick={regenerate}>Regenerate</button>
         {siblings.length > 0 && <button onClick={discardAll}>Discard all {siblings.length + 1}</button>}
       </div>
       {siblings.length > 0 && (

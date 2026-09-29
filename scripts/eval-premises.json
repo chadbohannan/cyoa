@@ -1,0 +1,20 @@
+[
+  {
+    "title": "The Lighthouse Keeper's Debt",
+    "description": "A coastal mystery. You are Mara Venn, newly arrived on the island of Skerry to take over the lighthouse from old Tobias Crane, who vanished a week ago owing money to half the village.",
+    "start_title": "Arrival at Skerry",
+    "start_body": "The ferry leaves you on the stone quay with one suitcase and a ring of iron keys. Above the village the lighthouse stands dark, though it should have been lit an hour ago. A woman mending nets watches you, then looks pointedly away. Nailed to the harbourmaster's door is a notice: TOBIAS CRANE — ANY INFORMATION — REWARD."
+  },
+  {
+    "title": "Salvage Rights",
+    "description": "Hard science fiction. You are the pilot of the one-person salvage tug Magpie, low on fuel, who has found a derelict freighter drifting in the outer belt with its transponder switched off.",
+    "start_title": "The Derelict",
+    "start_body": "The freighter turns slowly against the stars, a kilometre of hull with no running lights. Your fuel gauge reads eleven percent. The registry lookup returns a name, Harrow's Promise, and a status: lost with all hands, four years ago. Its cargo bay doors are open."
+  },
+  {
+    "title": "The Apprentice's Exam",
+    "description": "Light fantasy. You are Wren, a hedge-witch's apprentice who has one day to brew a remedy for the miller's fevered daughter, and your teacher has left you alone with the workshop.",
+    "start_title": "An Empty Workshop",
+    "start_body": "Mother Ashby's note is pinned to the cauldron: GONE TO THE HILLS. BREW THE FEVER DRAUGHT. DON'T TOUCH THE BLUE JAR. The shelves are half bare; the willow bark is gone and the feverfew is mouldy. Through the window you can see the miller pacing at the gate."
+  }
+]

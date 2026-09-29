@@ -155,8 +155,11 @@ export function useStory(storyId: number) {
   })
 
   // --- assist ---------------------------------------------------------------
-  // The chosen model is per browser, not per story. `busy` names the verb in
-  // flight so the inspector can disable its toolbar and say what it is waiting on.
+  // The chosen model is per browser, not per story. `busy` maps passage id to the
+  // verb in flight against it, so a request against one passage doesn't disable
+  // another's toolbar — the backend (its own concurrency gate, tuned per model
+  // server via CYOA_AGENT_CONCURRENCY) decides whether requests queue or run
+  // concurrently; the frontend just reflects what it actually sent.
   const [model, setModelState] = useState<string | null>(() => {
     try { return localStorage.getItem(MODEL_KEY) } catch { return null }
   })
@@ -167,15 +170,21 @@ export function useStory(storyId: number) {
       else localStorage.removeItem(MODEL_KEY)
     } catch { /* private mode */ }
   }
-  const [busy, setBusy] = useState<string | null>(null)
+  const [busy, setBusy] = useState<Record<number, string>>({})
   const assist = guard(async (passageId: number, req: Omit<AssistRequest, 'model'>) => {
-    setBusy(req.verb)
+    setBusy((b) => ({ ...b, [passageId]: req.verb }))
     try {
       const rows = await api.assist(storyId, passageId, { ...req, model })
-      patchGraph((g) => ({ ...g, proposals: rows.reduce(upsert, g.proposals) }))
+      if (rows.length > 0) {
+        // Proposals were created; patch them in locally
+        patchGraph((g) => ({ ...g, proposals: rows.reduce(upsert, g.proposals) }))
+      } else {
+        // Direct write on an unreviewed passage; reload the whole graph to see the change
+        await reload()
+      }
       return rows
     } finally {
-      setBusy(null)
+      setBusy((b) => { const { [passageId]: _drop, ...rest } = b; return rest })
     }
   })
   // Accept materialises rows server-side (possibly a passage *and* a choice), so refetch.

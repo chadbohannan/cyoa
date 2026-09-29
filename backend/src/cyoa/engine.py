@@ -22,11 +22,26 @@ floors at zero.
 
 from __future__ import annotations
 
+import json
 import random
+import sqlite3
 from collections import Counter, deque
 from typing import Any, Iterable
 
+from fastapi import HTTPException
+
 State = dict[str, Any]
+
+# JSON columns that need encoding/decoding; shared with main.py row helpers
+JSON_COLS: dict[str, set[str]] = {
+    "passages": {"meta"},
+    "choices": {"condition", "effects"},
+    "variables": {"default"},
+    "lore": set(),
+    "events": set(),
+    "proposals": {"payload"},
+    "agent_runs": {"params", "scope", "budget", "policy", "progress"},
+}
 
 OPS = {
     "==": lambda a, b: a == b,
@@ -117,6 +132,7 @@ def problems(
     passages, choices = list(passages), list(choices)
     ids = [p["id"] for p in passages]
     declared = {v["name"] for v in variables}
+    is_ending = {p["id"]: bool(p.get("is_ending")) for p in passages}
     out_of: dict[int, list[dict[str, Any]]] = {pid: [] for pid in ids}
     for c in choices:
         out_of.setdefault(c["from_passage"], []).append(c)
@@ -142,7 +158,8 @@ def problems(
         "unreachable": [pid for pid in ids if pid not in reachable],
         "dangling": [c["id"] for c in choices if c["to_passage"] is None],
         "undeclared": undeclared,
-        "endings": [pid for pid in ids if not out_of[pid]],
+        "endings": [pid for pid in ids if is_ending[pid]],
+        "unfinished": [pid for pid in ids if not out_of[pid] and not is_ending[pid]],
         "merge_candidates": merge_candidates(passages),
     }
 
@@ -222,15 +239,18 @@ def random_playthroughs(
     """Walk the story ``runs`` times taking a random available choice each step,
     through the same ``check``/``apply`` as the player. The shape mirrors
     ``models.Playtest``: what was never visited, where readers got stuck (choices
-    exist but none is available in that state), which endings were reached and
-    how often, and how many walks the step cap cut short."""
+    exist but none is available in that state), which decided endings were
+    reached and how often versus which unfinished stubs a walk simply ran out
+    of story at, and how many walks the step cap cut short."""
     passages, choices = list(passages), list(choices)
     ids = [p["id"] for p in passages]
+    is_ending = {p["id"]: bool(p.get("is_ending")) for p in passages}
     out = _outgoing(choices)
     rng = random.Random(seed)
     seen_p: Counter[int] = Counter()
     seen_c: Counter[int] = Counter()
     endings: Counter[int] = Counter()
+    unfinished: Counter[int] = Counter()
     stuck: Counter[int] = Counter()
     dangling: Counter[int] = Counter()
     cut, lengths = 0, []
@@ -240,9 +260,14 @@ def random_playthroughs(
             pid, state, steps = start_passage_id, dict(start_state), 0
             while True:
                 seen_p[pid] += 1
+                # is_ending is authoritative, same as _view: a decided ending has no
+                # choices at play time even if some are still attached to the row.
+                if is_ending.get(pid):
+                    endings[pid] += 1
+                    break
                 options = out.get(pid, [])
                 if not options:
-                    endings[pid] += 1
+                    unfinished[pid] += 1
                     break
                 open_ = [c for c in options if check(c["condition"], state)]
                 if not open_:
@@ -267,6 +292,7 @@ def random_playthroughs(
         "unvisited": [pid for pid in ids if not seen_p[pid]],
         "untaken": [c["id"] for c in choices if not seen_c[c["id"]]],
         "endings": dict(endings),
+        "unfinished": dict(unfinished),
         "stuck": dict(stuck),
         "dangling": dict(dangling),
     }
@@ -282,3 +308,78 @@ def _names(xs: Any) -> list[str]:
 
 def _numeric(x: Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+# --- Row mutation helpers (used by agents and routes) -------------------------
+
+def decode_row(table: str, row: sqlite3.Row) -> dict[str, Any]:
+    """Decode a row from the database, JSON-decoding columns as needed."""
+    d = dict(row)
+    for col in JSON_COLS[table]:
+        d[col] = json.loads(d[col])
+    return d
+
+
+def encode_values(table: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Encode values for insertion, JSON-encoding columns as needed."""
+    return {k: json.dumps(v) if k in JSON_COLS[table] else v for k, v in values.items()}
+
+
+def insert_row(conn: sqlite3.Connection, table: str, story_id: int, values: dict[str, Any]) -> dict[str, Any]:
+    """Insert a row and return the decoded result. Used by agents and routes."""
+    # Import here to avoid circular dependency
+    from . import db
+
+    # Verify story exists
+    row = conn.execute("SELECT * FROM stories WHERE id = ?", (story_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "story not found")
+
+    values = encode_values(table, {"story_id": story_id, **values})
+    cols = ", ".join(f'"{k}"' for k in values)
+    marks = ", ".join("?" for _ in values)
+    try:
+        cur = conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(409, str(e))
+    db.touch_story(conn, story_id)
+    return decode_row(table, conn.execute(f"SELECT * FROM {table} WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+
+def materialise(conn: sqlite3.Connection, story_id: int, p: dict[str, Any]) -> None:
+    """Write the rows a proposal describes. The one place proposal kinds become tables.
+
+    This is called both by the accept-proposal route (for explicit human approval)
+    and by the agents when a target passage is unreviewed (for direct writes).
+    """
+    kind, pl = p["kind"], p["payload"]
+    if kind == "edit_passage":
+        # a suggest_next "end" proposal sets is_ending without touching body, so only
+        # write the fields actually present in the payload.
+        sets = {k: (v if k != "is_ending" else int(v)) for k, v in pl.items() if k in ("body", "is_ending")}
+        if sets:
+            cols = ", ".join(f"{k} = ?" for k in sets)
+            conn.execute(f"UPDATE passages SET {cols} WHERE id = ? AND story_id = ?", (*sets.values(), p["target_passage"], story_id))
+    elif kind == "edit_choice":
+        conn.execute("UPDATE choices SET text = ? WHERE id = ? AND story_id = ?", (pl["text"], p["target_choice"], story_id))
+    elif kind == "new_passage":
+        new = insert_row(conn, "passages", story_id, {"title": pl["title"], "body": pl["body"], "pos_x": pl.get("pos_x", 0),
+                                                   "pos_y": pl.get("pos_y", 0), "provenance": "agent"})
+        if p["target_choice"] is not None:
+            conn.execute("UPDATE choices SET to_passage = ? WHERE id = ? AND to_passage IS NULL", (new["id"], p["target_choice"]))
+    elif kind == "new_choice":
+        to = pl.get("to_passage")
+        if to is None and pl.get("new_target"):
+            t = pl["new_target"]
+            to = insert_row(conn, "passages", story_id, {"title": t["title"], "body": t.get("body", ""), "pos_x": t.get("pos_x", 0),
+                                                     "pos_y": t.get("pos_y", 0), "provenance": "agent",
+                                                     "is_ending": bool(t.get("is_ending"))})["id"]
+        order = conn.execute("SELECT COALESCE(MAX(sort_order) + 1, 0) FROM choices WHERE from_passage = ?", (p["target_passage"],)).fetchone()[0]
+        insert_row(conn, "choices", story_id, {"from_passage": p["target_passage"], "to_passage": to, "text": pl["text"], "sort_order": order,
+                                            "condition": {}, "effects": {}})
+    elif kind == "new_variable":
+        insert_row(conn, "variables", story_id, {"name": pl["name"], "kind": pl["kind"], "default": pl.get("default")})
+    # 'note' materialises nothing; accepting it just files it away
+
+    from . import db
+    db.touch_story(conn, story_id)

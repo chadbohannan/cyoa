@@ -7,6 +7,7 @@ import { LoreView } from './LoreView'
 import { Player } from './Player'
 import { RunDock } from './RunDock'
 import { StoryCanvas, type Selection } from './StoryCanvas'
+import { usePrompts, type PromptStore } from './usePrompts'
 import { useStory, type StoryStore } from './useStory'
 
 type Tab = 'map' | 'lore' | 'play' | 'agents'
@@ -20,6 +21,8 @@ function hashStory(): number | null {
 
 export default function App() {
   const [storyId, setStoryId] = useState<number | null>(hashStory)
+  // Prompt roles are global, so their drafts live above any one story.
+  const prompts = usePrompts()
   useEffect(() => {
     const onHash = () => setStoryId(hashStory())
     window.addEventListener('hashchange', onHash)
@@ -30,10 +33,10 @@ export default function App() {
   }
 
   if (storyId === null) return <Library onOpen={open} />
-  return <StoryShell key={storyId} storyId={storyId} onBack={() => open(null)} />
+  return <StoryShell key={storyId} storyId={storyId} prompts={prompts} onBack={() => open(null)} />
 }
 
-function StoryShell({ storyId, onBack }: { storyId: number; onBack: () => void }) {
+function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: PromptStore; onBack: () => void }) {
   const store = useStory(storyId)
   const [tab, setTab] = useState<Tab>('map')
   const [selection, setSelection] = useState<Selection>(null)
@@ -76,7 +79,7 @@ function StoryShell({ storyId, onBack }: { storyId: number; onBack: () => void }
         ) : tab === 'play' ? (
           <Player key={playFrom ?? 'start'} store={store} from={playFrom} onStop={() => setPlayFrom(null)} />
         ) : tab === 'agents' ? (
-          <AgentsView store={store} runId={showRun} onPickRun={setShowRun} />
+          <AgentsView store={store} prompts={prompts} runId={showRun} onPickRun={setShowRun} mapPassage={selectedPassage?.id ?? null} />
         ) : (
           <div className="editor">
             <div className="map-column">

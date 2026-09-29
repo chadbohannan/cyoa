@@ -19,13 +19,20 @@ export function RunDock({ store, root, onSelect, onShowRun }: Props) {
   const { runs, graph } = store
   const [open, setOpen] = useState(true)
   const [depth, setDepth] = useState(2)
-  const [max, setMax] = useState(12)
+  const [branching, setBranching] = useState(3)
   const [steer, setSteer] = useState('')
+  const [skipInterrupt, setSkipInterrupt] = useState(false)
   const live = runs.filter((r) => r.status === 'running' || r.status === 'paused').length
 
   const expand = () => {
     if (!root) return
-    store.startRun({ workflow: 'expand_frontier', scope: [root.id], steer: steer || null, budget: { depth, max_passages: max } })
+    store.startRun({
+      workflow: 'expand_frontier',
+      scope: [root.id],
+      steer: steer || null,
+      budget: { depth, branching },
+      policy: { skip_review_interrupt: skipInterrupt },
+    })
   }
   const review = (run: AgentRun) => {
     const q = graph?.proposals.find((p) => p.run_id === run.id)
@@ -44,10 +51,14 @@ export function RunDock({ store, root, onSelect, onShowRun }: Props) {
         <div className="run-dock-body">
           <div className="row wrap run-form" title="grow the story outward from the selected passage">
             <span className="kind">Expand</span>
-            <span className="muted small">{root ? `from “${root.title}”` : 'select one passage'}</span>
-            <label className="small">depth <input type="number" min={1} max={6} value={depth} onChange={(e) => setDepth(Number(e.target.value))} className="tiny" /></label>
-            <label className="small">max passages <input type="number" min={1} max={500} value={max} onChange={(e) => setMax(Number(e.target.value))} className="tiny" /></label>
+            <span className="muted small">{root ? `from "${root.title}"` : 'select one passage'}</span>
+            <label className="small" title="levels grown below the selected passage; the last level's passages are endings">depth <input type="number" min={1} max={6} value={depth} onChange={(e) => setDepth(Number(e.target.value))} className="tiny" /></label>
+            <label className="small" title="most choices out of any one passage">branching <input type="number" min={1} max={6} value={branching} onChange={(e) => setBranching(Number(e.target.value))} className="tiny" /></label>
             <input placeholder="direction for the writer (optional)" value={steer} onChange={(e) => setSteer(e.target.value)} className="steer" />
+            <label className="small row">
+              <input type="checkbox" checked={skipInterrupt} onChange={(e) => setSkipInterrupt(e.target.checked)} />
+              Unattended
+            </label>
             <button className="primary" disabled={!root} onClick={expand}>Start</button>
           </div>
           {runs.length > 0 && (
@@ -76,7 +87,7 @@ function RunRow({ run, store, onReview, onShow }: { run: AgentRun; store: StoryS
       <span className="spacer" />
       {run.status === 'paused' && (
         <>
-          <input placeholder="steer the next level…" value={steer} onChange={(e) => setSteer(e.target.value)} className="steer" />
+          <input placeholder="steer the next level..." value={steer} onChange={(e) => setSteer(e.target.value)} className="steer" />
           <button className="primary" onClick={() => store.resumeRun(run.id, { steer: steer || null })}>Resume</button>
           <button onClick={() => store.resumeRun(run.id, { stop: true })} title="finish the run here">Stop</button>
         </>

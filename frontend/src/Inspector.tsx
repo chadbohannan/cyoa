@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { api, type Choice, type Passage, type Variable, type VariableKind } from './api'
 import { ConditionEditor, EffectsEditor } from './clauses'
 import { NumberField, TextArea, TextField } from './fields'
-import { AssistToolbar, ProposalList, ProposalPanel } from './Proposals'
+import { AssistToolbar, AuditFlag, ProposalList, ProposalPanel } from './Proposals'
 import type { Selection } from './StoryCanvas'
 import type { StoryStore } from './useStory'
 
@@ -69,7 +69,8 @@ function PassagePanel({ passage: p, store, onSelect }: { passage: Passage; store
 
       <label>Title<TextField value={p.title} onSave={(title) => save({ title })} /></label>
       <label>Body<TextArea rows={10} value={p.body} onSave={(body) => save({ body })} /></label>
-      <AssistToolbar passage={p} store={store} onSelect={onSelect} />
+      <AssistToolbar passage={p} hasChoices={outgoing.length > 0} store={store} onSelect={onSelect} />
+      {p.meta.audit && <AuditFlag audit={p.meta.audit} />}
       <ProposalList proposals={proposals} onSelect={onSelect} />
 
       <details>
@@ -88,12 +89,19 @@ function PassagePanel({ passage: p, store, onSelect }: { passage: Passage; store
         </label>
       </details>
 
+      <label className="row">
+        <input type="checkbox" checked={p.is_ending} onChange={(e) => save({ is_ending: e.target.checked })} /> Ending
+        <span className="muted small">— a decided, terminal passage; overrides any choices below at play</span>
+      </label>
+
       <div className="panel-head">
         <span className="kind">Choices</span>
         <span className="spacer" />
         <button onClick={addChoice}>+ Choice</button>
       </div>
-      {outgoing.length === 0 && <p className="muted">No choices — this is an ending.</p>}
+      {p.is_ending
+        ? <p className="muted">Marked as an ending — the reader sees no choices here, whatever is listed below.</p>
+        : outgoing.length === 0 && <p className="muted">No choices yet — mark it Ending above once that's deliberate.</p>}
       <ul className="choice-list">
         {outgoing.map((c, i) => {
           const target = graph.passages.find((x) => x.id === c.to_passage)
@@ -163,13 +171,13 @@ function ChoicePanel({ choice: c, store, onSelect }: { choice: Choice; store: St
         </p>
       ) : (
         <p className="small row">
-          <button disabled={!!store.busy} onClick={async () => {
+          <button disabled={!!store.busy[c.from_passage]} onClick={async () => {
             const rows = await store.assist(c.from_passage, { verb: 'draft_target', choice_id: c.id })
             if (rows?.[0]) onSelect({ kind: 'proposal', id: rows[0].id })
           }}>
             Draft target
           </button>
-          <span className="muted">{store.busy === 'draft_target' ? 'drafting…' : 'ask the model to write the destination'}</span>
+          <span className="muted">{store.busy[c.from_passage] === 'draft_target' ? 'drafting…' : 'ask the model to write the destination'}</span>
         </p>
       )}
       <div className="panel-head"><span className="kind">Condition</span></div>

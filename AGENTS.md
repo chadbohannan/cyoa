@@ -48,6 +48,7 @@ backend/                 # uv project (Python 3.12), FastAPI
 │   ├── twee.py          # Twee 3 / SugarCube export
 │   ├── agents.py        # LangGraph workflows: verbs, canon_check, expand_frontier; the model-call gate; RunHandle
 │   ├── runs.py          # background runs: threads, SQLite checkpoints (cyoa-agent.db), SSE log, resume/cancel
+│   ├── prompts.py       # prompt roles: defaults, overrides in backend/prompts.json (committed), validate
 │   └── llm.py           # model backend: CYOA_LLM=ollama|openai (llama-server :8080/v1 by default via make)
 └── tests/               # test_api.py (routes), test_engine.py (evaluator), test_agents.py (verbs, runs; stubbed model)
 frontend/                # Vite + React + TypeScript
@@ -55,6 +56,7 @@ frontend/                # Vite + React + TypeScript
     ├── api.ts           # typed gateway to /api (proxied to the backend in dev)
     ├── useStory.ts      # per-story graph store; every mutator patches local state
     ├── useRuns.ts       # runs rows + SSE tail (activity, progress); composed into useStory
+    ├── usePrompts.ts    # global prompt roles + unsaved drafts; explicit save (held in App)
     ├── store.ts         # guard() shared by the hooks
     ├── fields.tsx       # autosaving TextField / TextArea / NumberField / JsonField
     ├── App.tsx          # hash router: Library or StoryShell (Map / Lore / Play / Agents tabs)
@@ -65,7 +67,7 @@ frontend/                # Vite + React + TypeScript
     ├── Player.tsx       # reader view: play/start, play/choose, debug drawer, random-playtest panel
     ├── Proposals.tsx    # assist toolbar, proposal list, Accept/Reject panel
     ├── RunDock.tsx      # run dock under the map: expand form, run rows (resume/stop/cancel/review)
-    ├── AgentsView.tsx   # read-only workflow topology, current node, run state/history
+    ├── AgentsView.tsx   # workflow topology; node / prompt / run inspector
     ├── runs.ts          # run labels shared by the dock and Agents view
     └── LoreView.tsx     # lore entries and events timeline
 Makefile                 # install / backend / frontend / test / lint-wiki

@@ -17,10 +17,24 @@ export interface StorySummary extends Story {
 
 export type Provenance = 'human' | 'agent'
 
+export interface AuditIssue {
+  severity: 'minor' | 'major'
+  problem: string
+  quote: string
+  evidence: string
+}
+
+export interface AuditMeta {
+  verdict: 'unresolved'
+  rounds: number
+  issues: AuditIssue[]
+}
+
 export interface PassageMeta {
   location?: string
   present?: string[]
   events?: number[]
+  audit?: AuditMeta
   [key: string]: unknown
 }
 
@@ -35,6 +49,7 @@ export interface Passage {
   meta: PassageMeta
   reviewed: boolean
   provenance: Provenance
+  is_ending: boolean // a decided, terminal passage; authoritative over any outgoing choices at play time
 }
 
 export interface Choice {
@@ -82,7 +97,7 @@ export interface StoryEvent {
 // --- proposals (agent output; only Accept writes to the tables above) ---------
 
 export type ProposalKind = 'new_passage' | 'new_choice' | 'edit_passage' | 'edit_choice' | 'new_variable' | 'note'
-export type AssistVerb = 'draft_body' | 'suggest_choices' | 'draft_target' | 'rewrite'
+export type AssistVerb = 'draft_body' | 'suggest_choices' | 'draft_target' | 'rewrite' | 'suggest_next'
 
 // payload by kind mirrors the docstring on models.Proposal
 export interface NewTarget { title: string; body?: string; pos_x?: number; pos_y?: number }
@@ -96,6 +111,8 @@ export interface Proposal {
   target_choice: number | null
   payload: {
     body?: string
+    is_ending?: boolean
+    reasoning?: string // suggest_next's rationale, on an is_ending edit_passage proposal
     title?: string
     text?: string
     to_passage?: number | null
@@ -106,6 +123,7 @@ export interface Proposal {
     kind?: VariableKind
     default?: unknown
     issues?: { claim: string; conflicts_with: string; severity: 'minor' | 'major' }[]
+    audit?: AuditMeta // new_choice, when refine gave up on the target but kept it (see agents.DEFAULT_REFINE)
   }
   status: 'pending' | 'accepted' | 'rejected'
   run_id: number | null
@@ -124,12 +142,44 @@ export interface AssistRequest {
 export type Workflow = 'canon_check' | 'expand_frontier'
 export type RunStatus = 'running' | 'paused' | 'done' | 'failed' | 'cancelled'
 
+// expand_frontier's draft/audit/revise loop (agents.DEFAULT_REFINE); rounds: 0 is the
+// pre-R1 no-op path.
+export interface RefinePolicy {
+  rounds?: number
+  restarts?: number
+  block?: 'minor' | 'major'
+  on_unresolved?: 'keep_flagged' | 'drop'
+  candidates?: number
+  votes?: number
+  audit_reasoning?: boolean
+  path_audit?: boolean
+  auditors?: { passage?: string[]; choices?: string[] }
+  audit_model?: string | null
+}
+
+export interface RunPolicy {
+  auto_accept_unreviewed?: boolean
+  skip_review_interrupt?: boolean
+  refine?: RefinePolicy
+}
+
+export interface RunProgress {
+  level?: number
+  created?: number
+  frontier?: number
+  checked?: number
+  retries?: number
+  rounds?: number
+  restarts?: number
+}
+
 export interface RunCreate {
   workflow: Workflow
   scope: number[]
   model?: string | null
   steer?: string | null
-  budget?: { max_passages?: number; depth?: number; max_seconds?: number }
+  budget?: { depth?: number; branching?: number; max_passages?: number | null; max_seconds?: number }
+  policy?: RunPolicy
 }
 
 export interface AgentRun {
@@ -137,11 +187,13 @@ export interface AgentRun {
   story_id: number
   workflow: Workflow
   thread_id: string
-  params: { model?: string | null; steer?: string | null }
+  // `prompts` is the run's snapshot of every role, taken at start (runs.py)
+  params: { model?: string | null; steer?: string | null; prompts?: Record<string, string> }
   scope: number[]
-  budget: { max_passages?: number; depth?: number; max_seconds?: number }
+  budget: { depth?: number; branching?: number; max_passages?: number | null; max_seconds?: number }
+  policy: RunPolicy
   status: RunStatus
-  progress: { level?: number; created?: number; frontier?: number; checked?: number }
+  progress: RunProgress
   error: string | null
   pending_proposals: number
   created_at: string
@@ -153,7 +205,7 @@ export type RunEvent = { seq: number; at: number } & (
   | { type: 'node'; node: string }
   | { type: 'activity'; passage_id: number; phase: 'check' | 'choices' | 'passage' | 'done'; choice?: string }
   // the run's whole progress dict, as the backend stores it (see AgentRun.progress)
-  | { type: 'progress'; level?: number; created?: number; frontier?: number; checked?: number }
+  | ({ type: 'progress' } & RunProgress)
   | { type: 'interrupt'; value: { level: number; created: number; next: number } }
   | { type: 'status'; status: RunStatus; error: string | null }
 )
@@ -164,10 +216,31 @@ export interface RunState {
   history: { step: number | null; next: string[]; created_at: string | null }[]
 }
 
-// compiled.get_graph().to_json()
+// compiled.get_graph().to_json(); `prompts` is the roles a node composes (agents.NODE_PROMPTS)
 export interface WorkflowGraph {
-  nodes: { id: string; type?: string; data?: unknown }[]
+  nodes: { id: string; type?: string; data?: unknown; prompts: string[] }[]
   edges: { source: string; target: string; conditional?: boolean }[]
+}
+
+// --- prompts (global roles; see prompts.py) ------------------------------------
+
+export interface PromptInfo {
+  key: string
+  label: string
+  doc: string
+  placeholders: string[]
+  used_by: [workflow: string, node: string][]
+  default: string
+  override: string | null // null while the default is in use
+}
+
+export interface PromptUpdate {
+  text: string
+}
+
+export interface PromptPreviewRequest {
+  passage_id: number
+  text?: string | null // an unsaved draft to preview instead of the saved text
 }
 
 export interface StoryGraph {
@@ -195,7 +268,8 @@ export interface Problems {
   unreachable: number[]
   dangling: number[]
   undeclared: { choice_id: number; var: string }[]
-  endings: number[]
+  endings: number[] // is_ending passages: decided, terminal
+  unfinished: number[] // no outgoing choices, but not decided as an ending
   merge_candidates: MergeCandidate[]
 }
 
@@ -221,7 +295,8 @@ export interface Playtest {
   visited: Record<string, number>
   unvisited: number[]
   untaken: number[]
-  endings: Record<string, number>
+  endings: Record<string, number> // landed on an is_ending passage
+  unfinished: Record<string, number> // landed on a stub: no choices, not decided as an ending
   stuck: Record<string, number>
   dangling: Record<string, number>
 }
@@ -312,6 +387,15 @@ export const api = {
     events: (storyId: number, id: number, after = 0) => new EventSource(`/api/stories/${storyId}/runs/${id}/events?after=${after}`),
   },
   workflows: () => request<Record<string, WorkflowGraph>>('/agents/workflows'),
+  prompts: {
+    list: () => request<PromptInfo[]>('/agents/prompts'),
+    save: (key: string, body: PromptUpdate) =>
+      request<PromptInfo>(`/agents/prompts/${key}`, { method: 'PUT', body: JSON.stringify(body) }),
+    reset: (key: string) => request<PromptInfo>(`/agents/prompts/${key}`, { method: 'DELETE' }),
+    // the story only supplies the passage the context frame is built from
+    preview: (storyId: number, key: string, body: PromptPreviewRequest) =>
+      post<{ prompt: string }>(`/stories/${storyId}/prompts/${key}/preview`, body),
+  },
 
   llmModels: () => request<string[]>('/llm/models'),
 }

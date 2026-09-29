@@ -44,7 +44,10 @@ CREATE TABLE IF NOT EXISTS passages (
     meta       TEXT NOT NULL DEFAULT '{}',
     -- agents write directly where reviewed = 0 and must propose where reviewed = 1
     reviewed   INTEGER NOT NULL DEFAULT 0,
-    provenance TEXT NOT NULL DEFAULT 'human' CHECK (provenance IN ('human', 'agent'))
+    provenance TEXT NOT NULL DEFAULT 'human' CHECK (provenance IN ('human', 'agent')),
+    -- a decided, terminal passage ("you are dead"), distinct from a stub that just
+    -- has no choices yet; authoritative at play time (see main.py's _view)
+    is_ending  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS choices (
@@ -121,12 +124,32 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     scope      TEXT NOT NULL DEFAULT '[]',
     -- JSON: {"max_passages", "depth", "max_seconds"}
     budget     TEXT NOT NULL DEFAULT '{}',
+    -- JSON: {"auto_accept_unreviewed": bool, "skip_review_interrupt": bool, "refine": {...}} — controls automation
+    policy     TEXT NOT NULL DEFAULT '{}',
     status     TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'paused', 'done', 'failed', 'cancelled')),
     -- JSON: {"created", "level", ...} as the run reports it
     progress   TEXT NOT NULL DEFAULT '{}',
     error      TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- refinement telemetry: one row per (step, round, auditor). Append-only; cascades
+-- with the story, and with the specific passage/proposal it audited.
+CREATE TABLE IF NOT EXISTS audits (
+    id          INTEGER PRIMARY KEY,
+    story_id    INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    run_id      INTEGER REFERENCES agent_runs(id) ON DELETE SET NULL,
+    proposal_id INTEGER REFERENCES proposals(id) ON DELETE CASCADE,
+    passage_id  INTEGER REFERENCES passages(id) ON DELETE CASCADE,
+    step        TEXT NOT NULL,   -- the draft role used: 'frontier_passage' | 'frontier_ending'
+    round       INTEGER NOT NULL,
+    auditor     TEXT NOT NULL,   -- prompt role, e.g. 'audit_continuity'
+    verdict     TEXT NOT NULL CHECK (verdict IN ('pass', 'revise', 'error')),
+    issues      TEXT NOT NULL DEFAULT '[]',  -- JSON: verified issues only, each {severity, problem, quote, evidence}
+    dropped     INTEGER NOT NULL DEFAULT 0,  -- issues this auditor raised whose quote/evidence didn't verify
+    draft       TEXT NOT NULL DEFAULT '{}',  -- JSON {title, body}: what was audited this round
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 

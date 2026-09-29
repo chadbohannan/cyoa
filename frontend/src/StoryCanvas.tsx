@@ -36,6 +36,7 @@ type PassageData = {
   preview: string
   isStart: boolean
   isEnding: boolean
+  isUnfinished: boolean // no outgoing choices, but not decided as an ending either
   reviewed: boolean
   dim: boolean // search active and this card does not match
   unreachable: boolean
@@ -43,6 +44,7 @@ type PassageData = {
   mergeWith: number // other passages sharing its scene (problems overlay on)
   proposals: number // pending edits to this passage
   notes: number // pending canon_check notes
+  unresolvedAudit: boolean // refinement gave up on this passage with issues still open
   activity: string | null // what a run is doing to this passage right now
   collapsed: Subtree | null // this card stands in for a hidden subtree
 }
@@ -82,10 +84,12 @@ function PassageCard({ data, selected }: NodeProps<PassageNode>) {
       </div>
       {data.preview && <div className="passage-card-preview">{data.preview}</div>}
       {data.unreachable && <div className="passage-card-problem">unreachable</div>}
+      {data.isUnfinished && <div className="passage-card-problem" title="no choices yet, and not marked as an ending">unfinished</div>}
       {data.dangling > 0 && <div className="passage-card-problem">{data.dangling} dangling choice{data.dangling > 1 ? 's' : ''}</div>}
       {data.mergeWith > 0 && <div className="passage-card-merge" title="same time, location and events as another passage">⧉ merge candidate ×{data.mergeWith + 1}</div>}
       {data.proposals > 0 && <div className="passage-card-proposal">✎ {data.proposals} proposed edit{data.proposals > 1 ? 's' : ''}</div>}
       {data.notes > 0 && <div className="passage-card-problem">⚠ {data.notes} canon note{data.notes > 1 ? 's' : ''}</div>}
+      {data.unresolvedAudit && <div className="passage-card-problem">⚠ refinement flagged this passage</div>}
       {data.activity && <div className="passage-card-activity">✍ {ACTIVITY_LABEL[data.activity] ?? data.activity}</div>}
       {data.collapsed && (
         <div className="passage-card-collapsed" title="right-click → Expand subtree">
@@ -272,7 +276,8 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         title: p.title,
         preview: p.body.split('\n').filter(Boolean).slice(0, 2).join(' '),
         isStart: graph.story.start_passage_id === p.id,
-        isEnding: !outgoing.has(p.id),
+        isEnding: p.is_ending,
+        isUnfinished: !outgoing.has(p.id) && !p.is_ending,
         reviewed: p.reviewed,
         dim: !matches(p),
         unreachable: unreachable.has(p.id),
@@ -280,6 +285,7 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         mergeWith: mergeWith.get(p.id) ?? 0,
         proposals: graph.proposals.filter((q) => q.kind === 'edit_passage' && q.target_passage === p.id).length,
         notes: graph.proposals.filter((q) => q.kind === 'note' && q.target_passage === p.id).length,
+        unresolvedAudit: p.meta.audit?.verdict === 'unresolved',
         activity: activity[p.id] ?? null,
         collapsed: summaries.get(p.id) ?? null,
       },
@@ -443,7 +449,7 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
           <span className="muted small">
             {problems.no_start && <span className="error">no start · </span>}
             {problems.unreachable.length} unreachable · {problems.dangling.length} dangling · {problems.undeclared.length} undeclared ·{' '}
-            {problems.endings.length} ending{problems.endings.length === 1 ? '' : 's'}
+            {problems.endings.length} ending{problems.endings.length === 1 ? '' : 's'} · {problems.unfinished.length} unfinished
             {problems.merge_candidates.length > 0 && ` · ${problems.merge_candidates.length} merge group${problems.merge_candidates.length === 1 ? '' : 's'}`}
           </span>
         )}

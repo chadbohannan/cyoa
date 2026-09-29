@@ -165,6 +165,8 @@ function PlaytestPanel({ store }: { store: StoryStore }) {
           <section>
             <h4>Endings reached</h4>
             <ul className="path">{counts(report.endings, title)}{Object.keys(report.endings).length === 0 && <li className="muted">none</li>}</ul>
+            <h4>Unfinished stubs hit (no choices, not marked ending)</h4>
+            <ul className="path">{counts(report.unfinished, title)}{Object.keys(report.unfinished).length === 0 && <li className="muted">none</li>}</ul>
             <h4>Stuck (choices exist, none open)</h4>
             <ul className="path">{counts(report.stuck, title)}{Object.keys(report.stuck).length === 0 && <li className="muted">none</li>}</ul>
             <h4>Dangling choices hit</h4>

@@ -49,6 +49,7 @@ class PassageCreate(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     reviewed: bool = False
     provenance: Provenance = "human"
+    is_ending: bool = False
 
 
 class PassagePatch(BaseModel):
@@ -60,6 +61,7 @@ class PassagePatch(BaseModel):
     meta: dict[str, Any] | None = None
     reviewed: bool | None = None
     provenance: Provenance | None = None
+    is_ending: bool | None = None
 
 
 class Passage(PassageCreate):
@@ -146,7 +148,7 @@ class Event(EventCreate):
 
 ProposalKind = Literal["new_passage", "new_choice", "edit_passage", "edit_choice", "new_variable", "note"]
 ProposalStatus = Literal["pending", "accepted", "rejected"]
-AssistVerb = Literal["draft_body", "suggest_choices", "draft_target", "rewrite"]
+AssistVerb = Literal["draft_body", "suggest_choices", "draft_target", "rewrite", "suggest_next"]
 
 
 class Proposal(BaseModel):
@@ -154,7 +156,7 @@ class Proposal(BaseModel):
 
     new_passage   {title, body, pos_x, pos_y}; target_choice is the dangling choice to point at it
     new_choice    {text, to_passage | null, new_target: {title, body?, pos_x?, pos_y?} | null}; target_passage is the source
-    edit_passage  {body}; target_passage is the passage being rewritten
+    edit_passage  {body?} and/or {is_ending?}; target_passage is the passage being edited
     edit_choice   {text}; target_choice
     new_variable  {name, kind, default}
     note          {text, issues?: [{claim, conflicts_with, severity}]}; optional target_passage
@@ -188,13 +190,17 @@ RunStatus = Literal["running", "paused", "done", "failed", "cancelled"]
 
 class RunCreate(BaseModel):
     """Start a workflow from a map selection. `budget` keys default per workflow
-    (expand_frontier: max_passages, depth, max_seconds)."""
+    (expand_frontier: max_passages, depth, max_seconds). `policy` controls automation:
+    auto_accept_unreviewed (bool) auto-accepts proposals on unreviewed passages,
+    skip_review_interrupt (bool) skips the review pause between levels, refine (dict)
+    tunes expand_frontier's draft/audit/revise loop (see agents.DEFAULT_REFINE)."""
 
     workflow: Workflow
     scope: list[int] = Field(default_factory=list)
     model: str | None = None
     steer: str | None = None
     budget: dict[str, Any] = Field(default_factory=dict)
+    policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunResume(BaseModel):
@@ -212,12 +218,41 @@ class AgentRun(BaseModel):
     params: dict[str, Any]
     scope: list[int]
     budget: dict[str, Any]
+    policy: dict[str, Any]
     status: RunStatus
     progress: dict[str, Any]
     error: str | None
     pending_proposals: int
     created_at: str
     updated_at: str
+
+
+class PromptInfo(BaseModel):
+    """One prompt role (prompts.PROMPTS). `override` is null when the default is in use;
+    `used_by` is the (workflow, node) pairs that compose it (agents.NODE_PROMPTS)."""
+
+    key: str
+    label: str
+    doc: str
+    placeholders: list[str]
+    used_by: list[tuple[str, str]]
+    default: str
+    override: str | None
+
+
+class PromptUpdate(BaseModel):
+    text: str
+
+
+class PromptPreviewRequest(BaseModel):
+    """Assemble a role for one passage without calling the model; `text` previews an unsaved draft."""
+
+    passage_id: int
+    text: str | None = None
+
+
+class PromptPreview(BaseModel):
+    prompt: str
 
 
 class RunState(BaseModel):
@@ -270,13 +305,19 @@ class UndeclaredVar(BaseModel):
 
 
 class Problems(BaseModel):
-    """Static checks from ``engine.problems``; ids so the map can highlight them."""
+    """Static checks from ``engine.problems``; ids so the map can highlight them.
+
+    ``endings`` is ``is_ending = true`` passages — a decided, terminal state.
+    ``unfinished`` is passages with no outgoing choices that are *not* marked
+    ``is_ending`` — a stub still awaiting either choices or that decision.
+    """
 
     no_start: bool
     unreachable: list[int]
     dangling: list[int]
     undeclared: list[UndeclaredVar]
     endings: list[int]
+    unfinished: list[int]
     merge_candidates: list[MergeCandidate]
 
 
@@ -319,7 +360,11 @@ class PlaytestRequest(BaseModel):
 
 
 class Playtest(BaseModel):
-    """Coverage from ``engine.random_playthroughs``; counters are keyed by id."""
+    """Coverage from ``engine.random_playthroughs``; counters are keyed by id.
+
+    ``endings`` counts landings on an ``is_ending`` passage; ``unfinished`` counts
+    landings on a passage with no outgoing choices that isn't marked ``is_ending``.
+    """
 
     runs: int
     mean_length: float
@@ -328,5 +373,6 @@ class Playtest(BaseModel):
     unvisited: list[int]
     untaken: list[int]
     endings: dict[int, int]
+    unfinished: dict[int, int]
     stuck: dict[int, int]
     dangling: dict[int, int]

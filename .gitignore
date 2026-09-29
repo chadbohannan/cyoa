@@ -11,3 +11,6 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+eval-out/
+.backend.pid
+.frontend.pid
