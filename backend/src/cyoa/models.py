@@ -387,6 +387,14 @@ class PromoteResult(BaseModel):
     passage_ids: list[int]
 
 
+class PruneResult(BaseModel):
+    """What pruning a passage deleted: its subtree's passages (not the root) and
+    every choice out of the root or out of those passages."""
+
+    passage_ids: list[int]
+    choice_ids: list[int]
+
+
 class MergeRequest(BaseModel):
     """Fold ``passage_ids`` into ``into``: their inbound choices are retargeted
     at the survivor, their outgoing choices move to it, and they are deleted.

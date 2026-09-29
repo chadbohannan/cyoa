@@ -46,6 +46,7 @@ from .models import (
     Problems,
     PromoteRequest,
     PromoteResult,
+    PruneResult,
     PromptInfo,
     PromptPreview,
     PromptPreviewRequest,
@@ -473,6 +474,31 @@ def promote(story_id: int, body: PromoteRequest) -> PromoteResult:
             conn.execute(f"UPDATE passages SET reviewed = ? WHERE story_id = ? AND id IN ({marks})", (int(body.reviewed), story_id, *ids))
             db.touch_story(conn, story_id)
         return PromoteResult(passage_ids=found)
+
+
+@app.post("/api/stories/{story_id}/passages/{passage_id}/prune")
+def prune_passage(story_id: int, passage_id: int) -> PruneResult:
+    """Delete a passage's choices and its subtree, leaving it a frontier again.
+
+    The subtree is the collapse/promote one, so a passage the rest of the map
+    still reaches survives; only the choices leading into it from here go.
+    """
+    with db.transaction() as conn:
+        story = _require_story(conn, story_id)
+        if conn.execute("SELECT 1 FROM passages WHERE id = ? AND story_id = ?", (passage_id, story_id)).fetchone() is None:
+            raise HTTPException(404, "passage not found")
+        doomed = engine.subtree(passage_id, story["start_passage_id"], _passages(conn, story_id), _choices(conn, story_id))[1:]
+        sources = [passage_id, *doomed]
+        marks = ", ".join("?" for _ in sources)
+        choice_ids = sorted(r["id"] for r in conn.execute(
+            f"SELECT id FROM choices WHERE story_id = ? AND from_passage IN ({marks})", (story_id, *sources)))
+        conn.execute(f"DELETE FROM choices WHERE story_id = ? AND from_passage IN ({marks})", (story_id, *sources))
+        if doomed:
+            marks = ", ".join("?" for _ in doomed)
+            conn.execute(f"DELETE FROM passages WHERE story_id = ? AND id IN ({marks})", (story_id, *doomed))
+        if choice_ids or doomed:
+            db.touch_story(conn, story_id)
+        return PruneResult(passage_ids=sorted(doomed), choice_ids=choice_ids)
 
 
 @app.post("/api/stories/{story_id}/passages/merge")

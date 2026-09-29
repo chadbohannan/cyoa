@@ -402,6 +402,19 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
     if (selection?.kind === 'passage' && selection.id === id) onSelect(null)
   }
 
+  async function prunePassage(id: number) {
+    if (!graph) return
+    const choices = graph.choices.filter((c) => c.from_passage === id).length
+    const below = collapseSubtrees(graph.passages, graph.choices, graph.story.start_passage_id, new Set([id])).summaries.get(id)
+    const reviewed = below?.reviewed ? ` (${below.reviewed} reviewed)` : ''
+    if (!confirm(`Delete ${choices} choice(s) and the ${below?.hidden ?? 0} passage(s) below them${reviewed}? Passages another branch reaches are kept.`)) return
+    const r = await store.prunePassage(id)
+    if (!r) return
+    const gone = new Set(r.passage_ids)
+    if ((selection?.kind === 'passage' && gone.has(selection.id)) || (selection?.kind === 'choice' && r.choice_ids.includes(selection.id))) onSelect(null)
+    if (collapsed.has(id)) toggleCollapsed(id) // nothing left below it to hide
+  }
+
   const menuPassage = menu && graph?.passages.find((p) => p.id === menu.passageId)
   // Merge folds the multi-selection into the inspected passage when it is one of
   // them, else into the lowest id; the survivor keeps its title and body.
@@ -496,6 +509,11 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
           <button title="flip reviewed on this passage and everything reachable only through it"
             onClick={() => store.promote({ root: menu.passageId, reviewed: !menuPassage.reviewed })}>
             {menuPassage.reviewed ? 'Unreview subtree' : 'Promote subtree'}
+          </button>
+          <button className="danger" title="delete this passage's choices and everything reachable only through them"
+            disabled={!graph?.choices.some((c) => c.from_passage === menu.passageId)}
+            onClick={() => prunePassage(menu.passageId)}>
+            Delete choices &amp; subtree
           </button>
           <button className="danger" onClick={() => deletePassage(menu.passageId)}>
             Delete

@@ -236,6 +236,29 @@ def test_promote_subtree_and_explicit(client):
     assert not any(p["reviewed"] for p in c.get(f"{base}/graph").json()["passages"])
 
 
+def test_prune_deletes_choices_and_subtree(client):
+    c = client
+    s = c.post("/api/stories", json={"title": "Prune"}).json()
+    sid, start = s["id"], s["start_passage_id"]
+    base = f"/api/stories/{sid}"
+    left = _chain(c, base, start, ["L1", "L2", "L3"])
+    right = _chain(c, base, start, ["R1"])
+    # L2 also links to R1: R1 is reachable around L1, so pruning L1 keeps it
+    cross = c.post(f"{base}/choices", json={"from_passage": left[1], "to_passage": right[0], "text": "cross"}).json()
+
+    r = c.post(f"{base}/passages/{left[0]}/prune").json()
+    assert r["passage_ids"] == sorted(left[1:])
+    g = c.get(f"{base}/graph").json()
+    assert {p["id"] for p in g["passages"]} == {start, left[0], right[0]}
+    assert cross["id"] in r["choice_ids"]
+    assert not any(ch["from_passage"] == left[0] for ch in g["choices"])
+    assert [ch["to_passage"] for ch in g["choices"]] == [left[0], right[0]]
+
+    r = c.post(f"{base}/passages/{left[0]}/prune").json()
+    assert r == {"passage_ids": [], "choice_ids": []}
+    assert c.post(f"{base}/passages/9999/prune").status_code == 404
+
+
 def test_merge_candidates_and_merge(client):
     c = client
     s = c.post("/api/stories", json={"title": "Dup"}).json()

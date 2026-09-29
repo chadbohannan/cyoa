@@ -317,6 +317,12 @@ export interface MergeCandidate {
   passage_ids: number[]
 }
 
+// What pruning a passage deleted: its subtree (not the passage itself) and every choice out of either.
+export interface PruneResult {
+  passage_ids: number[]
+  choice_ids: number[]
+}
+
 export interface PromoteRequest {
   root?: number | null // its subtree (passages reachable only through it), as the map's collapse defines it
   passage_ids?: number[]
@@ -382,6 +388,8 @@ export const api = {
   passages: {
     ...child<Passage, PassageInput>('passages'),
     duplicate: (storyId: number, id: number) => post<Passage>(`/stories/${storyId}/passages/${id}/duplicate`),
+    // delete the passage's choices and its subtree, leaving it a frontier
+    prune: (storyId: number, id: number) => post<PruneResult>(`/stories/${storyId}/passages/${id}/prune`),
     // fold `passageIds` into `into`: inbound choices retargeted, outgoing moved, the others deleted
     merge: (storyId: number, into: number, passageIds: number[]) =>
       post<Passage>(`/stories/${storyId}/passages/merge`, { into, passage_ids: passageIds }),

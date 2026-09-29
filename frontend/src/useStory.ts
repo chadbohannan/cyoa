@@ -76,6 +76,20 @@ export function useStory(storyId: number) {
     reload() // the copy's choices were made server-side; cheapest to refetch
     return p
   })
+  // Pruning deletes a passage's choices and its subtree; the server picks the subtree.
+  const prunePassage = guard(async (id: number) => {
+    const r = await api.passages.prune(storyId, id)
+    const gone = new Set(r.passage_ids)
+    const cut = new Set(r.choice_ids)
+    patchGraph((g) => ({
+      ...g,
+      passages: g.passages.filter((p) => !gone.has(p.id)),
+      choices: g.choices
+        .filter((c) => !cut.has(c.id))
+        .map((c) => (c.to_passage !== null && gone.has(c.to_passage) ? { ...c, to_passage: null } : c)),
+    }))
+    return r
+  })
   // Promotion flips `reviewed` over a subtree or a selection at once; the server picks the subtree.
   const promote = guard(async (body: PromoteRequest) => {
     const { passage_ids } = await api.promote(storyId, body)
@@ -223,6 +237,7 @@ export function useStory(storyId: number) {
     updatePassage,
     deletePassage,
     duplicatePassage,
+    prunePassage,
     promote,
     mergePassages,
     createChoice,
