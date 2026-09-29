@@ -34,6 +34,7 @@ from .models import (
     LoreCreate,
     LorePatch,
     MergeRequest,
+    PacingPlan,
     Passage,
     PassageCreate,
     PassagePatch,
@@ -611,8 +612,15 @@ def start_run(story_id: int, body: RunCreate) -> AgentRun:
             raise HTTPException(422, "expand_frontier grows from exactly one selected passage")
         if body.workflow == "canon_check" and not _has_world(conn, story_id):
             raise HTTPException(422, "nothing to check against: the story has no lore or events")
+        budget, steer, policy = body.budget, body.steer, body.policy
+        if body.workflow == "expand_frontier":
+            # The run copies the story's plan (or one given for this run alone); the request's
+            # steer and policy go over the plan's run-wide ones.
+            plan = _valid_plan(budget) if budget else _load_plan(conn, story_id)
+            budget, steer = plan, steer if steer is not None else plan["steer"]
+            policy = {**plan["policy"], **policy}
     try:
-        row = runs.manager.start(story_id, body.workflow, scope, {"model": body.model, "steer": body.steer}, body.budget, body.policy)
+        row = runs.manager.start(story_id, body.workflow, scope, {"model": body.model, "steer": steer}, budget, policy)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return AgentRun(**row)
@@ -666,8 +674,53 @@ async def run_events(story_id: int, run_id: int, after: int = 0) -> StreamingRes
 
 @app.get("/api/agents/workflows")
 def agent_workflows() -> dict[str, Any]:
-    """Topology of each workflow, for the Agents view."""
+    """Topology of each workflow and the loop the Agents view draws for it."""
     return agents.workflow_json()
+
+
+# --- pacing ------------------------------------------------------------------------
+#
+# A story's pacing plan (concepts/act-pacing.md): the acts expand_frontier paces a
+# run by, then its fixed ending. Stored whole, as the Agents view edits it; a story
+# with no saved plan uses agents.DEFAULT_PLAN.
+
+
+def _valid_plan(data: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return PacingPlan(**data).model_dump()
+    except ValueError as e:
+        raise HTTPException(422, f"invalid pacing plan: {e}")
+
+
+def _load_plan(conn: sqlite3.Connection, story_id: int) -> dict[str, Any]:
+    row = conn.execute("SELECT plan FROM pacing WHERE story_id = ?", (story_id,)).fetchone()
+    return json.loads(row["plan"]) if row else PacingPlan(**agents.DEFAULT_PLAN).model_dump()
+
+
+@app.get("/api/stories/{story_id}/pacing")
+def get_pacing(story_id: int) -> PacingPlan:
+    with db.transaction() as conn:
+        _require_story(conn, story_id)
+        return PacingPlan(**_load_plan(conn, story_id))
+
+
+@app.put("/api/stories/{story_id}/pacing")
+def save_pacing(story_id: int, body: PacingPlan) -> PacingPlan:
+    with db.transaction() as conn:
+        _require_story(conn, story_id)
+        conn.execute("INSERT INTO pacing (story_id, plan) VALUES (?, ?) ON CONFLICT (story_id) DO UPDATE SET plan = excluded.plan",
+                     (story_id, json.dumps(body.model_dump())))
+        db.touch_story(conn, story_id)
+    return body
+
+
+@app.delete("/api/stories/{story_id}/pacing")
+def reset_pacing(story_id: int) -> PacingPlan:
+    """Forget the saved plan; the story is back on the default."""
+    with db.transaction() as conn:
+        _require_story(conn, story_id)
+        conn.execute("DELETE FROM pacing WHERE story_id = ?", (story_id,))
+        return PacingPlan(**_load_plan(conn, story_id))
 
 
 # --- prompts -------------------------------------------------------------------
@@ -716,11 +769,12 @@ def reset_prompt(key: str) -> PromptInfo:
 def preview_prompt(story_id: int, key: str, body: PromptPreviewRequest) -> PromptPreview:
     """The exact text `agents.compose` would send for this passage, without the model.
     {choice} is the passage's first outgoing choice, {tone} the rewrite verb's default, and
-    {branching}/{remaining} what a default expand run's first level would use."""
+    the frontier pacing slots what the first level of `body.stage` in the story's plan would use."""
     _require_prompt(key)
     with db.transaction() as conn:
         _require_story(conn, story_id)
         _require_passage(conn, story_id, body.passage_id)
+        plan = body.plan.model_dump() if body.plan else _load_plan(conn, story_id)
     roles = prompts.resolve()
     if body.text is not None:
         try:
@@ -730,10 +784,8 @@ def preview_prompt(story_id: int, key: str, body: PromptPreviewRequest) -> Promp
         roles[key] = body.text
     ctx = agents.gather_context({"story_id": story_id, "passage_id": body.passage_id, "params": {}})["context"]
     choice = ctx["outgoing"][0]["text"] if ctx["outgoing"] else "(example choice)"
-    # frontier pacing placeholders as a default expand run's first level would fill them
-    b = agents.DEFAULT_BUDGET
     return PromptPreview(prompt=agents.compose(ctx, roles, key, choice=choice, tone="vivid",
-                                               branching=str(b["branching"]), remaining=str(b["depth"])))
+                                               **agents.preview_fields(plan, body.stage or 0, key)))
 
 
 # --- built frontend (make serve) ---------------------------------------------

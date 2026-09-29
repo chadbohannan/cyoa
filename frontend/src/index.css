@@ -151,31 +151,54 @@ select.model { width: auto; max-width: 16rem; }
 .run-dock-body { overflow-y: auto; padding: 0 0.75rem 0.5rem; }
 .run-form { margin-bottom: 0.4rem; }
 .run-form label { display: flex; align-items: center; gap: 0.3rem; }
-input.tiny { width: 3.5rem; }
 input.steer { flex: 1; min-width: 12rem; }
 .run-list { list-style: none; margin: 0; padding: 0; }
 .run-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; border-top: 1px solid var(--line); }
 .badge.running { color: var(--accent); border-color: var(--accent); }
 .badge.paused { color: #b58900; border-color: #b58900; }
 .badge.failed, .badge.cancelled { color: var(--danger); border-color: var(--danger); }
+.run-form .plan-summary { text-align: left; }
+
+/* Agents view: the pacing timeline, the per-level loop, the editors beside them */
 .agents { display: flex; height: 100%; }
-.agents-side { width: 16rem; border-right: 1px solid var(--line); overflow-y: auto; padding: 0.5rem 0.75rem; }
-.agents-side button.link.active { font-weight: 600; }
-.agents-canvas { flex: 1; min-width: 0; }
+.agents-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.agents-tabs { padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--line); }
+.agents-tabs .tabs { margin-left: 0; }
+.agents-canvas { flex: 1; min-height: 0; }
 .agents-inspector { width: 30rem; border-left: 1px solid var(--line); overflow-y: auto; padding: 0.5rem 0.75rem; }
 .agents-inspector details { margin: 0.2rem 0; }
 .agents-inspector summary { cursor: pointer; }
 .agents-inspector .row { margin: 0.4rem 0; }
+.agents-inspector label.field { margin: 0.4rem 0; }
+.agents-inspector label.field.row > span:first-child { white-space: nowrap; }
+input.small-num { width: 5rem; }
+.prompt-panel { border-top: 1px solid var(--line); margin-top: 0.75rem; padding-top: 0.25rem; }
+.timeline { display: flex; gap: 2px; padding: 0.6rem 0.75rem 0.2rem; }
+.timeline .stage { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 0.15rem; text-align: left; border-radius: 0; padding: 0.35rem 0.5rem; }
+.timeline .stage:first-child { border-radius: 6px 0 0 6px; }
+.timeline .stage:last-child { border-radius: 0 6px 6px 0; }
+.timeline .stage.premise { flex: 0 0 8rem; }
+.timeline .stage.add { flex: 0 0 2rem; align-items: center; justify-content: center; color: var(--muted); }
+.timeline .stage.resolution { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.timeline .stage.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.stage-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.stage-meta { font-size: 0.75em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ticks { display: flex; gap: 0.25rem; width: 100%; }
+.tick { flex: 1; font-size: 0.7em; font-family: ui-monospace, monospace; color: var(--muted); border-top: 2px solid var(--line); padding-top: 0.1rem; }
+.loop-caption { margin: 0.2rem 0.75rem; }
 textarea.prompt-text { min-height: 12rem; }
 pre.preview { font-size: 0.75em; max-height: 28rem; overflow: auto; background: color-mix(in srgb, CanvasText 5%, transparent); padding: 0.4rem; border-radius: 4px; white-space: pre-wrap; }
 dl.params { display: grid; grid-template-columns: max-content 1fr; gap: 0.15rem 0.6rem; margin: 0.25rem 0; }
 dl.params dd { margin: 0; overflow-wrap: anywhere; }
+dl.params .contents { display: contents; }
 .badge.edited { color: var(--accent); border-color: var(--accent); }
-.step-card.selected { background: color-mix(in srgb, var(--accent) 18%, Canvas); }
-.step-card { padding: 0.4rem 0.8rem; border: 1px solid #8888; border-radius: 999px; background: Canvas; color: CanvasText; font-size: 12px; font-family: ui-monospace, monospace; }
-.step-card.terminal { border-style: dashed; color: var(--muted); }
-.step-card.next { border-color: #b58900; }
-.step-card.current { border-color: var(--accent); border-width: 2px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
-.react-flow__edge.conditional path { stroke-dasharray: 4 3; }
+.step-card { position: relative; padding: 0.4rem 0.8rem; min-width: 7rem; text-align: center; border: 1px solid #8888; border-radius: 999px; background: Canvas; color: CanvasText; font-size: 12px; font-family: ui-monospace, monospace; }
+.step-card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, Canvas); }
+.step-card.dimmed { opacity: 0.35; }
+.step-when { font-size: 0.8em; color: var(--muted); font-family: system-ui, sans-serif; }
+.edited-dot { position: absolute; top: 3px; right: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.step-group { width: 100%; height: 100%; border: 1px dashed var(--line); border-radius: 10px; background: color-mix(in srgb, var(--accent) 4%, transparent); pointer-events: none; }
+.step-group span { display: block; padding: 0.3rem 0.6rem; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+.react-flow__node-group { padding: 0; border: none; background: none; }
+.react-flow__edge.dimmed path { opacity: 0.3; }
 pre.state { font-size: 0.75em; max-height: 14rem; overflow: auto; background: color-mix(in srgb, CanvasText 5%, transparent); padding: 0.4rem; border-radius: 4px; white-space: pre-wrap; }
-ol.steps { padding-left: 1.2rem; max-height: 10rem; overflow-y: auto; }

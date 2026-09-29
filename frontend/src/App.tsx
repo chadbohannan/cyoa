@@ -7,6 +7,7 @@ import { LoreView } from './LoreView'
 import { Player } from './Player'
 import { RunDock } from './RunDock'
 import { StoryCanvas, type Selection } from './StoryCanvas'
+import { usePacing } from './usePacing'
 import { usePrompts, type PromptStore } from './usePrompts'
 import { useStory, type StoryStore } from './useStory'
 
@@ -38,20 +39,15 @@ export default function App() {
 
 function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: PromptStore; onBack: () => void }) {
   const store = useStory(storyId)
+  const pacing = usePacing(storyId)
   const [tab, setTab] = useState<Tab>('map')
   const [selection, setSelection] = useState<Selection>(null)
   // "Play from here" on the map; null plays from the story's start passage
   const [playFrom, setPlayFrom] = useState<number | null>(null)
-  // The run the Agents view is showing; set from the run dock's "workflow" link
-  const [showRun, setShowRun] = useState<number | null>(null)
   const { graph, error } = store
   const playFromPassage = (id: number) => {
     setPlayFrom(id)
     setTab('play')
-  }
-  const showRunInAgents = (id: number) => {
-    setShowRun(id)
-    setTab('agents')
   }
   const selectedPassage = selection?.kind === 'passage' ? graph?.passages.find((p) => p.id === selection.id) ?? null : null
 
@@ -79,7 +75,7 @@ function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: Pr
         ) : tab === 'play' ? (
           <Player key={playFrom ?? 'start'} store={store} from={playFrom} onStop={() => setPlayFrom(null)} />
         ) : tab === 'agents' ? (
-          <AgentsView store={store} prompts={prompts} runId={showRun} onPickRun={setShowRun} mapPassage={selectedPassage?.id ?? null} />
+          <AgentsView store={store} prompts={prompts} pacing={pacing} mapPassage={selectedPassage?.id ?? null} />
         ) : (
           <div className="editor">
             <div className="map-column">
@@ -90,7 +86,7 @@ function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: Pr
                 onPlayFrom={playFromPassage}
                 onExpandFrom={(id) => setSelection({ kind: 'passage', id })}
               />
-              <RunDock store={store} root={selectedPassage} onSelect={setSelection} onShowRun={showRunInAgents} />
+              <RunDock store={store} pacing={pacing} root={selectedPassage} onSelect={setSelection} onEditPacing={() => setTab('agents')} />
             </div>
             <aside className="inspector">
               <Inspector store={store} selection={selection} onSelect={setSelection} />

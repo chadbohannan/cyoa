@@ -213,10 +213,16 @@ def growth(prompt):
     return {"title": f"{choice} from {passage_title(prompt)}", "body": f"You {choice.lower()}."}
 
 
+def plan(*branching, ending=None, **act):
+    """A pacing plan with one single-level act per branching value, then the ending."""
+    return {"acts": [{"name": f"Act {i + 1}", "levels": 1, "branching": b, **act} for i, b in enumerate(branching)],
+            "ending": ending or {}}
+
+
 def test_expand_frontier_run_pauses_and_resumes(client, story, monkeypatch):
     fake = use(monkeypatch, growth)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"max_passages": 4, "depth": 2},
+                                                   "budget": plan(2),
                                                    "policy": {"refine": {"rounds": 0}}})
     assert r.status_code == 201, r.text
     run = wait(client, story["base"], r.json()["id"])
@@ -233,14 +239,14 @@ def test_expand_frontier_run_pauses_and_resumes(client, story, monkeypatch):
     kinds = [json.loads(e[6:])["type"] for e in events if e.startswith("data: ")]
     assert kinds[:4] == ["progress", "node", "activity", "activity"] and kinds[-4:] == ["progress", "node", "interrupt", "status"]
     assert [e["phase"] for e in (json.loads(x[6:]) for x in events if x.startswith("data: ")) if e["type"] == "activity"][:4] == ["choices", "done", "passage", "done"]
-    # resume with a steer: level 1 has two frontier passages and two passages of budget left
+    # resume with a steer: level 1 is the ending, two choices out of each frontier passage
     r = client.post(f"{story['base']}/runs/{run['id']}/resume", json={"steer": "make it darker"})
     assert r.status_code == 200 and r.json()["status"] == "running"
     run = wait(client, story["base"], run["id"])
-    assert run["status"] == "done" and run["progress"]["created"] == 4
+    assert run["status"] == "done" and run["progress"]["created"] == 6
     assert any("AUTHOR'S DIRECTION for everything you write: make it darker" in p for p in fake.prompts)
     g = client.get(f"{story['base']}/graph").json()
-    assert len([p for p in g["passages"] if p["provenance"] == "agent"]) == 4
+    assert len([p for p in g["passages"] if p["provenance"] == "agent"]) == 6
     # LangGraph's checkpoint is readable after the fact
     st = client.get(f"{story['base']}/runs/{run['id']}/state").json()
     assert st["values"]["level"] == 1 and st["values"]["steer"] == "make it darker" and st["next"] == []
@@ -251,10 +257,10 @@ def test_expand_frontier_run_pauses_and_resumes(client, story, monkeypatch):
 def test_expand_frontier_skip_review_runs_every_level(client, story, monkeypatch):
     use(monkeypatch, growth)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"max_passages": 6, "depth": 2},
+                                                   "budget": plan(2),
                                                    "policy": {"skip_review_interrupt": True, "refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
-    # no pause between levels: level 0 grows 2, level 1 grows the remaining 4 under them
+    # no pause between levels: level 0 grows 2, the ending level 4 under them
     assert run["status"] == "done" and run["progress"]["created"] == 6
     g = client.get(f"{story['base']}/graph").json()
     assert len([p for p in g["passages"] if p["provenance"] == "agent"]) == 6
@@ -277,10 +283,10 @@ def test_expand_frontier_retries_placeholders_and_empty_answers(client, story, m
 
     fake = use(monkeypatch, flaky)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"max_passages": 1, "depth": 1},
+                                                   "budget": plan(1),
                                                    "policy": {"refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done" and run["error"] is None and run["progress"]["created"] == 1
+    assert run["status"] == "paused" and run["error"] is None and run["progress"]["created"] == 1
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     assert new["body"] == "You go left into the dark."
@@ -298,7 +304,7 @@ def test_expand_frontier_skips_a_choice_whose_passage_never_comes(client, story,
 
     use(monkeypatch, stubborn)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"max_passages": 2, "depth": 1},
+                                                   "budget": plan(2),
                                                    "policy": {"refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
     # the sibling still grows; the failed choice is not written as a dangling link
@@ -310,7 +316,7 @@ def test_expand_frontier_skips_a_choice_whose_passage_never_comes(client, story,
 def test_expand_frontier_branching_caps_choices_and_last_level_ends(client, story, monkeypatch):
     fake = use(monkeypatch, growth)  # offers two choices everywhere
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"depth": 2, "branching": 1},
+                                                   "budget": plan(1),
                                                    "policy": {"skip_review_interrupt": True, "refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
     assert run["status"] == "done" and run["progress"]["created"] == 2
@@ -336,7 +342,7 @@ def test_expand_frontier_writer_may_end_a_storyline_early(client, story, monkeyp
 
     use(monkeypatch, closing)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"depth": 3, "branching": 2},
+                                                   "budget": plan(2, 2),
                                                    "policy": {"skip_review_interrupt": True, "refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
     g = client.get(f"{story['base']}/graph").json()
@@ -348,10 +354,77 @@ def test_expand_frontier_writer_may_end_a_storyline_early(client, story, monkeyp
     assert run["status"] == "done"
 
 
+def test_pacing_plan_is_stored_per_story(client, story):
+    base = story["base"]
+    assert client.get(f"{base}/pacing").json() == agents.DEFAULT_PLAN
+    mine = {**plan(2, 3, guidance="Push."), "steer": "Grim.", "max_seconds": 60, "policy": {"refine": {"rounds": 0}}}
+    r = client.put(f"{base}/pacing", json=mine)
+    assert r.status_code == 200
+    got = client.get(f"{base}/pacing").json()
+    assert [a["branching"] for a in got["acts"]] == [2, 3] and got["steer"] == "Grim." and got["ending"] == {"length": "", "guidance": ""}
+    other = client.post("/api/stories", json={"title": "Other"}).json()
+    assert client.get(f"/api/stories/{other['id']}/pacing").json() == agents.DEFAULT_PLAN
+    for bad in ({**mine, "acts": []}, {**mine, "max_passages": 4}, plan(2, levels=0)):
+        assert client.put(f"{base}/pacing", json=bad).status_code == 422
+    assert client.delete(f"{base}/pacing").json() == agents.DEFAULT_PLAN
+    assert client.get("/api/stories/999/pacing").status_code == 404
+
+
+def test_acts_pace_the_run(client, story, monkeypatch):
+    """Each level takes its act's guidance, length and branching; the choices out of a passage
+    take its act's; an act that forbids early endings cannot end a storyline; the level past
+    the last act is the ending, with the ending's guidance. The saved plan's steer applies."""
+    def eager(prompt):
+        out = growth(prompt)
+        if "Suggest new choices" not in prompt:
+            out["ends_story"] = True  # the writer tries to end every storyline at once
+        return out
+
+    fake = use(monkeypatch, eager)
+    base = story["base"]
+    client.put(f"{base}/pacing", json={
+        "acts": [{"name": "Setup", "levels": 1, "branching": 1, "ends_story": False, "length": "LEN-A", "guidance": "GUIDE-A"},
+                 {"name": "Climax", "levels": 1, "branching": 2, "ends_story": True, "length": "LEN-B", "guidance": "GUIDE-B"}],
+        "ending": {"length": "LEN-E", "guidance": "GUIDE-E"}, "steer": "Grim.", "policy": {"refine": {"rounds": 0}}})
+    run = wait(client, base, client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
+                                                               "policy": {"skip_review_interrupt": True}}).json()["id"])
+    assert run["status"] == "done" and run["budget"]["depth"] == 3 and run["params"]["steer"] == "Grim."
+    assert run["policy"] == {"refine": {"rounds": 0}, "skip_review_interrupt": True}
+    g = client.get(f"{base}/graph").json()
+    by_title = {p["title"]: p for p in g["passages"]}
+    # Setup forbids early endings: its one passage is grown despite ends_story; Climax allows them
+    setup = by_title["Go left from Start"]
+    assert not setup["is_ending"] and "Go right from Start" not in by_title
+    climax = by_title["Go left from Go left from Start"]
+    assert climax["is_ending"] and not any(c["from_passage"] == climax["id"] for c in g["choices"])
+    choices = [p for p in fake.prompts if "Suggest new choices" in p]
+    assert len(choices) == 2  # the root's, then the Setup passage's; Climax passages ended early
+    assert "Offer at most 1 choices" in choices[0] and "Its direction: GUIDE-A" in choices[0]
+    assert "has 1 passages left after PASSAGE" in choices[0] and "has 0 passages left after PASSAGE" in choices[1]
+    passages = {passage_title(p): p for p in fake.prompts if "Suggest new choices" not in p}
+    assert "Write about LEN-A" in passages["Start"] and "GUIDE-A" in passages["Start"]
+    assert "Write about LEN-B" in passages["Go left from Start"] and "GUIDE-B" in passages["Go left from Start"]
+    assert all(p.rstrip().endswith("AUTHOR'S DIRECTION for everything you write: Grim.") for p in fake.prompts)
+    assert not any("GUIDE-E" in p for p in fake.prompts)  # every Climax passage ended, so no ending level
+
+
+def test_the_ending_level_takes_the_endings_guidance(client, story, monkeypatch):
+    fake = use(monkeypatch, growth)
+    base = story["base"]
+    run = wait(client, base, client.post(f"{base}/runs", json={
+        "workflow": "expand_frontier", "scope": [story["start"]],
+        "budget": plan(1, length="LEN-A", ending={"length": "LEN-E", "guidance": "GUIDE-E"}),
+        "policy": {"skip_review_interrupt": True, "refine": {"rounds": 0}}}).json()["id"])
+    assert run["status"] == "done"
+    [ending] = [p for p in fake.prompts if "is the last in this storyline" in p]
+    assert "of about LEN-E" in ending and "GUIDE-E" in ending
+    assert [p["is_ending"] for p in client.get(f"{base}/graph").json()["passages"] if p["provenance"] == "agent"] == [False, True]
+
+
 def test_context_carries_the_whole_path(client, story, monkeypatch):
     fake = use(monkeypatch, growth)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                   "budget": {"max_passages": 7, "depth": 3},
+                                                   "budget": plan(2, 2),
                                                    "policy": {"skip_review_interrupt": True, "refine": {"rounds": 0}}})
     wait(client, story["base"], r.json()["id"])
     # a level-2 passage prompt shows the start passage (two steps up) and the choices taken since
@@ -382,10 +455,10 @@ def test_refine_passes_on_first_round(client, story, monkeypatch):
 
     use(monkeypatch, passing)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 2}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done" and run["error"] is None
+    assert run["status"] == "paused" and run["error"] is None
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     assert new["body"] == "You go left into the dark." and new["meta"].get("audit") is None
@@ -414,10 +487,10 @@ def test_refine_revises_until_pass(client, story, monkeypatch):
 
     use(monkeypatch, revising)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 2}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     assert new["body"] == "You go left. Revised."
@@ -438,10 +511,10 @@ def test_refine_drops_unverifiable_quote(client, story, monkeypatch):
 
     use(monkeypatch, bad_quote)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 2}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     # the unverifiable issue is dropped, so the round reads as a pass
@@ -464,10 +537,10 @@ def test_refine_plateau_then_keep_flagged(client, story, monkeypatch):
 
     use(monkeypatch, stuck)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 3, "restarts": 1}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     assert new["meta"]["audit"]["verdict"] == "unresolved"
@@ -487,9 +560,10 @@ def test_refine_on_unresolved_drop(client, story, monkeypatch):
 
     use(monkeypatch, stuck)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 3, "restarts": 1, "on_unresolved": "drop"}}})
     run = wait(client, story["base"], r.json()["id"])
+    # nothing written, so no frontier to pause over
     assert run["status"] == "done" and run["progress"]["created"] == 0 and "dropped" in run["error"]
     g = client.get(f"{story['base']}/graph").json()
     assert [c["text"] for c in g["choices"] if c["from_passage"] == story["start"]] == ["Enter", "Wait"]
@@ -509,10 +583,10 @@ def test_audit_canon_skipped_without_lore_or_events(client, monkeypatch):
 
     use(monkeypatch, passing)
     r = client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [s["start_passage_id"]],
-                                          "budget": {"max_passages": 1, "depth": 1},
+                                          "budget": plan(1),
                                           "policy": {"refine": {"rounds": 2}}})
     run = wait(client, base, r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     assert {r["auditor"] for r in audits()} == {"audit_continuity"}
 
 
@@ -533,10 +607,10 @@ def test_audit_votes_majority(client, story, monkeypatch):
 
     use(monkeypatch, voting)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 1, "votes": 3}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     assert new["meta"].get("audit") is None  # no issue reached a majority, so round 1 read as a pass
@@ -559,11 +633,11 @@ def test_audit_call_failure_does_not_sink_the_run(client, story, monkeypatch):
 
     use(monkeypatch, exploding)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 1}}})
     run = wait(client, story["base"], r.json()["id"])
     # the run still completes and writes the passage; the failed call is logged, not fatal
-    assert run["status"] == "done" and "model exploded" in run["error"]
+    assert run["status"] == "paused" and "model exploded" in run["error"]
     g = client.get(f"{story['base']}/graph").json()
     [new] = [p for p in g["passages"] if p["provenance"] == "agent"]
     assert new["body"] == "You go left." and new["meta"].get("audit") is None
@@ -574,10 +648,10 @@ def test_audit_call_failure_does_not_sink_the_run(client, story, monkeypatch):
 def test_refine_rounds_zero_is_a_true_noop(client, story, monkeypatch):
     fake = use(monkeypatch, growth)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     assert audits() == []
     assert not any("DRAFT TITLE" in p or "Check DRAFT" in p for p in fake.prompts)
 
@@ -601,11 +675,11 @@ def test_grow_fans_out_choices_concurrently(client, story, monkeypatch):
 
     use(monkeypatch, concurrent_growth)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 2, "depth": 1},
+                                                    "budget": plan(2),
                                                     "policy": {"refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
     # a broken barrier (serial dispatch) would exhaust retries and skip both choices
-    assert run["status"] == "done" and run["error"] is None and run["progress"]["created"] == 2
+    assert run["status"] == "paused" and run["error"] is None and run["progress"]["created"] == 2
 
 
 def test_refine_fans_out_auditors_concurrently(client, story, monkeypatch):
@@ -624,10 +698,10 @@ def test_refine_fans_out_auditors_concurrently(client, story, monkeypatch):
 
     use(monkeypatch, concurrent_auditing)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 1, "depth": 1},
+                                                    "budget": plan(1),
                                                     "policy": {"refine": {"rounds": 1}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done"
+    assert run["status"] == "paused"
     # a broken barrier (serial dispatch) would raise inside invoke(), read back as
     # verdict "error" per auditor instead of the "pass" both should reach together
     assert audits() and all(r["verdict"] == "pass" for r in audits())
@@ -649,10 +723,10 @@ def test_refine_recovers_from_exhausted_draft_retries(client, story, monkeypatch
 
     use(monkeypatch, stubborn)
     r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                    "budget": {"max_passages": 2, "depth": 1},
+                                                    "budget": plan(2),
                                                     "policy": {"refine": {"rounds": 1}}})
     run = wait(client, story["base"], r.json()["id"])
-    assert run["status"] == "done" and "Go left" in run["error"]
+    assert run["status"] == "paused" and "Go left" in run["error"]
     g = client.get(f"{story['base']}/graph").json()
     assert [c["text"] for c in g["choices"] if c["from_passage"] == story["start"]] == ["Enter", "Wait", "Go right"]
 
@@ -696,7 +770,7 @@ def test_fingerprint_ignores_case_and_whitespace():
 def test_expand_frontier_proposes_where_reviewed(client, story, monkeypatch):
     use(monkeypatch, growth)
     client.patch(f"{story['base']}/passages/{story['start']}", json={"reviewed": True})
-    r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]], "budget": {"depth": 1},
+    r = client.post(f"{story['base']}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]], "budget": plan(2),
                                                    "policy": {"refine": {"rounds": 0}}})
     run = wait(client, story["base"], r.json()["id"])
     assert run["status"] == "done" and run["pending_proposals"] == 2
@@ -717,9 +791,15 @@ def test_run_validation_and_cancel(client, story, monkeypatch):
     assert client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["start"], story["pit"]]}).status_code == 422
     assert client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [999]}).status_code == 422
     assert client.get(f"{base}/runs/999").status_code == 404
-    r = client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]], "budget": {"max_passages": 6},
+    # the old flat cap is gone, and a plan must have an act
+    for bad in ({"max_passages": 6}, {"depth": 2}, {"acts": []}, plan(0), plan(7)):
+        r = client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]], "budget": bad})
+        assert r.status_code == 422, bad
+    # an empty budget runs the story's plan (here the default), which pauses after its first level
+    r = client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
                                           "policy": {"refine": {"rounds": 0}}})
     run = wait(client, base, r.json()["id"])
+    assert run["budget"] == {**agents.DEFAULT_PLAN, "depth": agents.plan_depth(agents.DEFAULT_PLAN)}
     assert run["status"] == "paused"
     assert client.post(f"{base}/runs/{run['id']}/cancel").json()["status"] == "cancelled"
     assert client.post(f"{base}/runs/{run['id']}/resume", json={}).status_code == 409
@@ -796,6 +876,22 @@ def test_workflow_topologies():
     assert set(wf) == {"verb", "canon_check", "expand_frontier"}
     edges = {(e["source"], e["target"]) for e in wf["expand_frontier"]["edges"]}
     assert {("plan", "grow"), ("grow", "gather"), ("gather", "review"), ("review", "plan"), ("finish", "__end__")} <= edges
+    # the other workflows' loops are their own nodes
+    assert [s["id"] for s in wf["canon_check"]["loop"]["steps"]] == [n["id"] for n in wf["canon_check"]["nodes"]
+                                                                     if not n["id"].startswith("__")]
+
+
+def test_loop_matches_node_prompts():
+    """The Agents view draws expand_frontier from FRONTIER_LOOP: every graph node but finish
+    appears, grow's steps compose exactly the roles NODE_PROMPTS declares for it, and every
+    edge joins two steps."""
+    loop = agents.workflow_json()["expand_frontier"]["loop"]
+    steps = {s["id"]: s for s in loop["steps"]}
+    inside = [s for s in loop["steps"] if s.get("inside") == "grow"]
+    assert [r for s in inside for r in s["roles"]] == agents.NODE_PROMPTS[("expand_frontier", "grow")]
+    nodes = {n["id"] for n in agents.workflow_json()["expand_frontier"]["nodes"]} - {"__start__", "__end__", "finish", "grow"}
+    assert nodes == {s["id"] for s in loop["steps"] if "inside" not in s}
+    assert all(a in steps and b in steps for a, b in loop["edges"])
 
 
 # --- prompts ------------------------------------------------------------------------
@@ -807,7 +903,8 @@ def test_prompt_override_reaches_verb_in_every_story(client, story, monkeypatch)
     assert [p["key"] for p in lst] == list(prompts.PROMPTS)
     body = next(p for p in lst if p["key"] == "draft_body")
     assert body["override"] is None and body["used_by"] == [["verb", "generate"]]
-    assert next(p for p in lst if p["key"] == "frontier_passage")["placeholders"] == ["choice", "remaining"]
+    assert next(p for p in lst if p["key"] == "frontier_passage")["placeholders"] == [
+        "choice", "remaining", "act_remaining", "length", "act_guidance"]
 
     r = client.put("/api/agents/prompts/draft_body", json={"text": "Write it bleakly."})
     assert r.status_code == 200 and r.json()["override"] == "Write it bleakly."
@@ -856,21 +953,21 @@ def test_run_keeps_its_prompt_snapshot(client, story, monkeypatch):
     fake = use(monkeypatch, growth)
     base = story["base"]
     run = wait(client, base, client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["start"]],
-                                                               "budget": {"max_passages": 4, "depth": 2},
+                                                               "budget": plan(2),
                                                                "policy": {"refine": {"rounds": 0}}}).json()["id"])
     assert run["status"] == "paused" and run["params"]["prompts"] == prompts.resolve()
     # edit mid-run: the paused run resumes with the texts it started with
-    terse = "Suggest new choices, but tersely: at most {branching}, {remaining} left."
+    terse = "Suggest new choices, but tersely: at most {branching}, {remaining} left, {act_remaining} in the act ({act_guidance})."
     assert client.put("/api/agents/prompts/frontier_choices", json={"text": terse}).status_code == 200
     n = len(fake.prompts)
     wait(client, base, client.post(f"{base}/runs/{run['id']}/resume", json={}).json()["id"])
     assert fake.prompts[n:] and not any("tersely" in p for p in fake.prompts[n:])
     # a new run picks the override up
-    later = client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["pit"]], "budget": {"depth": 1},
+    later = client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["pit"]], "budget": plan(3, guidance="Hurry."),
                                               "policy": {"refine": {"rounds": 0}}}).json()
     assert later["params"]["prompts"]["frontier_choices"] == terse
     wait(client, base, later["id"])
-    assert any(p.endswith("TASK: Suggest new choices, but tersely: at most 3, 1 left.") for p in fake.prompts)
+    assert any(p.endswith("TASK: Suggest new choices, but tersely: at most 3, 2 left, 1 in the act (Hurry.).") for p in fake.prompts)
 
 
 def test_preview_equals_what_the_model_receives(client, story, monkeypatch):
@@ -881,18 +978,34 @@ def test_preview_equals_what_the_model_receives(client, story, monkeypatch):
     client.post(f"{base}/passages/{story['start']}/assist", json={"verb": "draft_body"})
     assert r.json()["prompt"] == fake.prompts[-1]
 
-    # {choice} is the first outgoing choice, or a stand-in; an unsaved draft is previewed, not saved
-    r = client.post(f"{base}/prompts/frontier_passage/preview", json={"passage_id": story["start"], "text": "After '{choice}', {remaining} left."})
-    assert r.json()["prompt"].endswith("TASK: After 'Enter', 2 left.") and prompts.overrides() == {}
+    # {choice} is the first outgoing choice, or a stand-in; an unsaved draft is previewed, not saved;
+    # the pacing slots are the story's plan's, at the stage asked for
+    client.put(f"{base}/pacing", json=plan(2, 3, length="short", guidance="Open.",
+                                           ending={"length": "long", "guidance": "Close."}))
+    draft = "After '{choice}', {remaining} left, {act_remaining} in act, {length}: {act_guidance}"
+    r = client.post(f"{base}/prompts/frontier_passage/preview", json={"passage_id": story["start"], "text": draft})
+    assert r.json()["prompt"].endswith("TASK: After 'Enter', 3 left, 1 in act, short: Open.") and prompts.overrides() == {}
+    r = client.post(f"{base}/prompts/frontier_passage/preview", json={"passage_id": story["start"], "text": draft, "stage": 2})
+    assert r.json()["prompt"].endswith("TASK: After 'Enter', 1 left, 1 in act, long: Close.")
+    # an unsaved plan previews without being saved
+    r = client.post(f"{base}/prompts/frontier_passage/preview", json={"passage_id": story["start"], "text": draft,
+                                                                      "plan": plan(2, length="tiny", guidance="Draft.")})
+    assert r.json()["prompt"].endswith("TASK: After 'Enter', 2 left, 1 in act, tiny: Draft.")
+    assert client.get(f"{base}/pacing").json()["acts"][0]["guidance"] == "Open."
     r = client.post(f"{base}/prompts/draft_target/preview", json={"passage_id": story["pit"]})
     assert "took the choice '(example choice)'" in r.json()["prompt"]
     assert client.post(f"{base}/prompts/draft_body/preview", json={"passage_id": story["start"], "text": "{x}"}).status_code == 422
 
+    # a later act's choices are the ones out of its first passage; a run with no budget of its own
+    # takes the saved plan, and stage 0's choices preview is the root's, the run's first prompt
+    r = client.post(f"{base}/prompts/frontier_choices/preview", json={"passage_id": story["pit"], "stage": 1})
+    assert "Offer at most 3 choices" in r.json()["prompt"] and "Its direction: Open." in r.json()["prompt"]
     r = client.post(f"{base}/prompts/frontier_choices/preview", json={"passage_id": story["pit"]})
     fake = use(monkeypatch, growth)
-    wait(client, base, client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["pit"]],
-                                                         "budget": {"depth": 2},
-                                                         "policy": {"refine": {"rounds": 0}}}).json()["id"])
+    run = wait(client, base, client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["pit"]],
+                                                               "policy": {"refine": {"rounds": 0}}}).json()["id"])
+    assert run["budget"]["depth"] == 3 and run["status"] == "paused"
+    wait(client, base, client.post(f"{base}/runs/{run['id']}/resume", json={"stop": True}).json()["id"])
     assert r.json()["prompt"] == fake.prompts[0]
 
 
@@ -946,7 +1059,7 @@ def test_node_prompts_match_behaviour(client, story, monkeypatch):
     # policy (rounds: 2) so every declared role, including audit_continuity/audit_canon/
     # revise_passage, actually gets composed at least once.
     wait(client, base, client.post(f"{base}/runs", json={"workflow": "expand_frontier", "scope": [story["pit"]],
-                                                         "budget": {"depth": 2}, "policy": {"skip_review_interrupt": True}}).json()["id"])
+                                                         "budget": plan(2), "policy": {"skip_review_interrupt": True}}).json()["id"])
 
     declared = {(w, n, k) for (w, n), keys in agents.NODE_PROMPTS.items() for k in keys}
     assert seen == declared

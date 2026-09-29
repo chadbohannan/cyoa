@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     params     TEXT NOT NULL DEFAULT '{}',
     -- JSON: passage ids the run was started from
     scope      TEXT NOT NULL DEFAULT '[]',
-    -- JSON: {"max_passages", "depth", "max_seconds"}
+    -- JSON: expand_frontier's copy of the story's pacing plan, plus its derived "depth"
     budget     TEXT NOT NULL DEFAULT '{}',
     -- JSON: {"auto_accept_unreviewed": bool, "skip_review_interrupt": bool, "refine": {...}} — controls automation
     policy     TEXT NOT NULL DEFAULT '{}',
@@ -132,6 +132,14 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     error      TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- a story's pacing plan (concepts/act-pacing.md; shape in models.PacingPlan). A row
+-- only once the author saves one; until then the story uses agents.DEFAULT_PLAN. Its
+-- own table rather than a stories column so an existing cyoa.db picks it up.
+CREATE TABLE IF NOT EXISTS pacing (
+    story_id INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+    plan     TEXT NOT NULL
 );
 
 -- refinement telemetry: one row per (step, round, auditor). Append-only; cascades

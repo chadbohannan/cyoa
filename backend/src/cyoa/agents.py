@@ -194,7 +194,15 @@ class PassageDraft(BaseModel):
     body: str = Field(description="the passage text, second person present tense, one to three short paragraphs")
 
 
-class FrontierPassageDraft(PassageDraft):
+class FrontierDraft(BaseModel):
+    """expand_frontier's passage. No length in the schema: it reaches the model on every
+    call and would override the pacing plan's {length} (concepts/act-pacing.md)."""
+
+    title: str = Field(description="a short passage title")
+    body: str = Field(description="the passage text, second person present tense, as long as the TASK asks")
+
+
+class FrontierPassageDraft(FrontierDraft):
     ends_story: bool = Field(False, description="true only if this passage brings the storyline to a natural conclusion")
 
 
@@ -686,15 +694,52 @@ def canon_input(story_id: int, scope: list[int], params: Params, budget: dict[st
 # `grow` asks for choices out of a passage, drafts a destination for each new
 # one, and writes them the way the reviewed rule says: directly, as agent
 # passages, where the parent is unreviewed; as proposals where it is reviewed
-# (those are not grown further). The budget is a conditional edge, not the
-# prompt: `plan` allots the remaining passage budget across the frontier, and
-# `gather` stops the run at max_passages, depth or the wall-clock cap. Between
-# levels `review` interrupts so the author can look, steer, or stop.
+# (those are not grown further). The run's budget is a copy of the story's
+# pacing plan (concepts/act-pacing.md): a list of acts, then a fixed ending
+# level. Each level belongs to one act, whose branching caps the choices out of
+# its passages and whose guidance and length fill the frontier prompts. `gather`
+# stops the run at the plan's depth or the wall-clock cap. Between levels
+# `review` interrupts so the author can look, steer, or stop.
 
-# depth: levels grown below the root; the last level's passages are endings. branching: the most
-# choices out of any one passage. Together they bound the tree (branching + … + branching**depth),
-# so max_passages is only an optional extra cap (None = none) and max_seconds the time guard.
-DEFAULT_BUDGET = {"depth": 2, "branching": 3, "max_passages": None, "max_seconds": 1800}
+# The plan a story uses until its author saves one. Depth is derived (the acts'
+# levels plus the ending) and is a hard cap; max_seconds is only the time guard.
+DEFAULT_PLAN: dict[str, Any] = {
+    "acts": [
+        {"name": "Setup", "levels": 1, "branching": 2, "ends_story": True, "length": "150–250 words",
+         "guidance": "Establish who the reader is, where they are and what they want, and put the central problem "
+                     "in front of them."},
+        {"name": "Confrontation", "levels": 1, "branching": 3, "ends_story": True, "length": "200–300 words",
+         "guidance": "Raise the stakes with obstacles, reversals and costly choices. A reckless or poor choice may "
+                     "end the storyline here, as a consequence the reader can see coming."},
+        {"name": "Climax", "levels": 1, "branching": 2, "ends_story": True, "length": "200–300 words",
+         "guidance": "Bring the central conflict to its decisive moment. The choices out of it are the decisive "
+                     "choices of the story."},
+    ],
+    "ending": {"length": "400–600 words",
+               "guidance": "The climax has been decided. Resolve the central question and let the consequences land, "
+                           "for better or worse, and close with a sense of an ending."},
+    "steer": "",
+    "max_seconds": 1800,
+    "policy": {},
+}
+
+
+def plan_depth(plan: dict[str, Any]) -> int:
+    """Levels a plan grows below the run's root: every act's, plus the ending's one."""
+    return sum(a["levels"] for a in plan["acts"]) + 1
+
+
+def stage_at(plan: dict[str, Any], level: int) -> dict[str, Any]:
+    """The stage whose passages are written at `level` (0 = the root's children): an
+    act, or the ending past the last act. `index` is the act's position (len(acts) for
+    the ending) and `end` the first level after it."""
+    start = 0
+    for i, act in enumerate(plan["acts"]):
+        if level < start + act["levels"]:
+            return {**act, "index": i, "end": start + act["levels"], "ending": False}
+        start += act["levels"]
+    return {**plan["ending"], "name": "Resolution", "index": len(plan["acts"]), "end": start + 1,
+            "ending": True, "branching": 0, "ends_story": True}
 
 # refinement-loops.md's R1: draft -> validate (code, via _ask_until) -> audit (model,
 # per auditor) -> revise, repeated per passage. `rounds: 2` is a shorter leash than the
@@ -721,7 +766,7 @@ class FrontierState(TypedDict, total=False):
     run_id: int | None
     story_id: int
     root: int
-    budget: dict[str, Any]
+    budget: dict[str, Any]  # the run's copy of the pacing plan, plus its derived "depth"
     policy: dict[str, Any]  # {"auto_accept_unreviewed": bool, "skip_review_interrupt": bool}
     deadline: float
     params: Params
@@ -739,8 +784,8 @@ class GrowState(TypedDict, total=False):
     story_id: int
     passage_id: int
     level: int
-    allot: int  # new passages this grow may write (at most the budget's branching)
-    depth: int  # the run's depth budget; the level at depth - 1 writes endings
+    allot: int  # new passages this grow may write: the branching of the parent's act
+    plan: dict[str, Any]  # the run's pacing plan; the level past its last act writes endings
     steer: str
     params: Params
     policy: dict[str, Any]  # {"refine": {...}} — see DEFAULT_REFINE
@@ -764,21 +809,48 @@ def plan(state: FrontierState) -> FrontierState:
     return {"level": level, "frontier": frontier, "batch": state.get("batch") or uuid.uuid4().hex}
 
 
+def _choice_stage(plan: dict[str, Any], level: int) -> dict[str, Any]:
+    """The act the choices grown at `level` come out of: the parent passage's (the one
+    written at level - 1), or the first act's for the run's root. Its branching caps them,
+    and act_remaining counts the levels of that act still to be written from here."""
+    stage = stage_at(plan, max(level - 1, 0))
+    return {**stage, "act_remaining": max(stage["end"] - level, 0)}
+
+
+def choice_fields(plan: dict[str, Any], level: int) -> dict[str, str]:
+    """frontier_choices' pacing slots for the choices grown at `level`."""
+    s = _choice_stage(plan, level)
+    return {"branching": str(s["branching"]), "remaining": str(plan_depth(plan) - level),
+            "act_remaining": str(s["act_remaining"]), "act_guidance": s["guidance"]}
+
+
+def passage_fields(plan: dict[str, Any], level: int) -> dict[str, str]:
+    """frontier_passage's and frontier_ending's pacing slots for a passage written at `level`."""
+    s = stage_at(plan, level)
+    return {"remaining": str(plan_depth(plan) - level), "act_remaining": str(s["end"] - level),
+            "length": s["length"], "act_guidance": s["guidance"]}
+
+
+def preview_fields(plan: dict[str, Any], stage: int, role: str) -> dict[str, str]:
+    """The pacing slots as `stage` (an act's index, or len(acts) for the ending) fills them
+    first: its first passage, or the first choices out of it — the root's, for the first
+    act, and the last act's, for the ending, which offers none. The prompt preview uses
+    this so it matches `grow`."""
+    stage = min(max(stage, 0), len(plan["acts"]))
+    start = sum(a["levels"] for a in plan["acts"][:stage])
+    if role == "frontier_choices":
+        return choice_fields(plan, start + 1 if 0 < stage < len(plan["acts"]) else start)
+    return passage_fields(plan, start)
+
+
 def fan_out_frontier(state: FrontierState) -> list[Send]:
-    """Allot each frontier passage up to `branching` choices; with a max_passages cap, split what is
-    left of it across the frontier. Passages allotted nothing are skipped."""
-    budget, n = state["budget"], len(state["frontier"])
-    cap = budget.get("max_passages")
-    remaining = None if cap is None else max(0, cap - _created(state))
+    """Allot each frontier passage its act's branching, one grow each."""
+    plan = state["budget"]
+    allot = _choice_stage(plan, state["level"])["branching"]
     common = {"run_id": state.get("run_id"), "story_id": state["story_id"], "level": state["level"],
-              "depth": budget["depth"], "steer": state.get("steer", ""), "params": state["params"], "batch": state["batch"],
-              "policy": state.get("policy") or {}}
-    sends = []
-    for i, pid in enumerate(state["frontier"]):
-        share = budget["branching"] if remaining is None else remaining // n + (1 if i < remaining % n else 0)
-        allot = min(budget["branching"], share)
-        if allot > 0:
-            sends.append(Send("grow", {**common, "passage_id": pid, "allot": allot}))
+              "plan": plan, "steer": state.get("steer", ""), "params": state["params"], "batch": state["batch"],
+              "policy": state.get("policy") or {}, "allot": allot}
+    sends = [Send("grow", {**common, "passage_id": pid}) for pid in state["frontier"]]
     return sends or [Send("gather", {})]
 
 
@@ -987,9 +1059,15 @@ def grow(state: GrowState) -> GrowState:
     p = ctx["passage"]
     roles = _prompts(state["params"])
     # Pacing: `left` counts the passages this storyline still has, including the one each choice
-    # leads to. At the run's last level (left == 1) the new passages are endings.
-    left = state["depth"] - state["level"]
-    final = left <= 1
+    # leads to. The choices come out of the parent's act; the passages they lead to belong to this
+    # level's stage, and past the last act that is the ending, where every new passage is one.
+    plan, level = state["plan"], state["level"]
+    stage = stage_at(plan, level)
+    final = stage["ending"]
+    fields = passage_fields(plan, level)
+    # An act that forbids early endings drafts without the ends_story field, so the writer cannot set it.
+    role, schema = (("frontier_ending", FrontierDraft) if final else
+                    ("frontier_passage", FrontierPassageDraft if stage["ends_story"] else FrontierDraft))
     # Every kept choice gets a new passage: a frontier grows outward, it does not
     # link back (merging is deferred; see agentic-authoring). Existing titles the
     # model offers anyway are drafted afresh under the choice.
@@ -997,7 +1075,7 @@ def grow(state: GrowState) -> GrowState:
         drafts = _ask_until(
             state["params"], ChoiceDrafts,
             lambda error: compose(ctx, roles, "frontier_choices", steer=state["steer"], error=error,
-                                  branching=str(state["allot"]), remaining=str(left)),
+                                  **choice_fields(plan, level)),
             lambda out: None if _fresh_choices(out.choices, ctx["outgoing"], state["allot"])
             else "every suggested choice was empty, '...', or already exists",
             {"passage_id": pid, "phase": "choices"}).choices
@@ -1010,7 +1088,7 @@ def grow(state: GrowState) -> GrowState:
     order = 1 + max((o.get("sort_order", 0) for o in ctx["outgoing"]), default=-1)
 
     def item(i: int, choice: tuple[str, str]) -> dict[str, Any]:
-        return _draft_choice(state, ctx, roles, p, pid, i, choice, len(kept), order, left, final, refine_cfg)
+        return _draft_choice(state, ctx, roles, p, pid, i, choice, len(kept), order, role, schema, fields, final, refine_cfg)
 
     results = _fan(list(enumerate(kept)), lambda pair: item(*pair))
     children: list[int] = []
@@ -1029,16 +1107,16 @@ def grow(state: GrowState) -> GrowState:
 
 
 def _draft_choice(state: GrowState, ctx: dict[str, Any], roles: dict[str, str], p: dict[str, Any], pid: int,
-                  i: int, choice: tuple[str, str], n_kept: int, order: int, left: int, final: bool,
-                  refine_cfg: dict[str, Any]) -> dict[str, Any]:
-    """One choice's passage: draft (plain or refined per `refine_cfg`), then write it —
-    directly if the parent is unreviewed, as a proposal if it is reviewed. Every failure
-    mode (exhausted draft retries, refine giving up under on_unresolved: 'drop') is caught
-    here and reported as a skip, never raised, so `grow`'s fan-out can run every choice
-    concurrently without one failure taking down its siblings."""
+                  i: int, choice: tuple[str, str], n_kept: int, order: int, role: str, schema: type[BaseModel],
+                  fields: dict[str, str], final: bool, refine_cfg: dict[str, Any]) -> dict[str, Any]:
+    """One choice's passage: draft `role` (plain or refined per `refine_cfg`) with the
+    level's pacing `fields`, then write it — directly if the parent is unreviewed, as a
+    proposal if it is reviewed. Every failure mode (exhausted draft retries, refine giving
+    up under on_unresolved: 'drop') is caught here and reported as a skip, never raised,
+    so `grow`'s fan-out can run every choice concurrently without one failure taking
+    down its siblings."""
     text, target = choice
     pos = {"pos_x": p["pos_x"] + (i - (n_kept - 1) / 2) * 220, "pos_y": p["pos_y"] + 180}
-    role, schema = ("frontier_ending", PassageDraft) if final else ("frontier_passage", FrontierPassageDraft)
     activity = {"passage_id": pid, "phase": "passage", "choice": text}
     draft_problem = lambda d: ("title and body must both be written out, not empty or '...'"
                                if _blank(d.title) or _placeholder_body(d.body) else None)
@@ -1054,7 +1132,7 @@ def _draft_choice(state: GrowState, ctx: dict[str, Any], roles: dict[str, str], 
         try:
             out = _ask_until(
                 state["params"], schema,
-                lambda error: compose(ctx, roles, role, steer=state["steer"], error=error, choice=text, remaining=str(left)),
+                lambda error: compose(ctx, roles, role, steer=state["steer"], error=error, choice=text, **fields),
                 draft_problem, activity)
         except ValueError as e:
             # Skip this choice (no dangling link is written) and still grow its siblings.
@@ -1067,7 +1145,7 @@ def _draft_choice(state: GrowState, ctx: dict[str, Any], roles: dict[str, str], 
             draft, meta_audit, audit_rows = refine(
                 params=state["params"], ctx=ctx, roles=roles, cfg=refine_cfg, schema=schema,
                 draft_role=role, revise_role="revise_passage", steer=state["steer"],
-                compose_fields={"choice": text, "remaining": str(left)}, draft_problem=draft_problem,
+                compose_fields={"choice": text, **fields}, draft_problem=draft_problem,
                 activity=activity, has_canon=has_canon, errors=choice_errors)
         except ValueError as e:
             # No draft was ever produced (exhausted MAX_ATTEMPTS on the very first
@@ -1122,9 +1200,8 @@ def gather(state: FrontierState) -> FrontierState:
 def after_gather(state: FrontierState) -> Literal["review", "finish"]:
     budget, level = state["budget"], state["level"]
     next_frontier = [c for g in state["grown"] if g["level"] == level for c in g["children"]]
-    cap = budget.get("max_passages")
-    if (state.get("stop") or not next_frontier or (cap is not None and _created(state) >= cap)
-            or level + 1 >= budget["depth"] or time.time() > state["deadline"]):
+    if (state.get("stop") or not next_frontier or level + 1 >= budget["depth"]
+            or time.time() > state["deadline"]):
         return "finish"
     return "review"
 
@@ -1169,7 +1246,8 @@ def build_frontier_graph() -> StateGraph:
 def frontier_input(story_id: int, scope: list[int], params: Params, budget: dict[str, Any]) -> FrontierState:
     if len(scope) != 1:
         raise ValueError("expand_frontier grows from exactly one root passage")
-    budget = {**DEFAULT_BUDGET, **budget}
+    plan = {**DEFAULT_PLAN, **budget}  # an empty budget runs the default plan
+    budget = {**plan, "depth": plan_depth(plan)}
     return {"story_id": story_id, "root": scope[0], "budget": budget, "deadline": time.time() + budget["max_seconds"],
             "params": params, "level": 0, "steer": params.get("steer") or "", "stop": False}
 
@@ -1184,12 +1262,60 @@ WORKFLOWS: dict[str, tuple[Any, Any]] = {
 }
 
 
+# expand_frontier's per-level loop as the Agents view draws it: the graph's nodes in
+# run order, with `grow` opened into the steps it runs per frontier passage. `roles` is
+# the prompt a step composes, `reads` the plan fields it takes (act fields unprefixed),
+# `when` the condition it runs under. test_loop_matches_node_prompts keeps grow's steps
+# and NODE_PROMPTS in agreement.
+FRONTIER_LOOP: dict[str, Any] = {
+    "steps": [
+        {"id": "plan", "label": "plan", "reads": ["branching"],
+         "doc": "Collects the frontier and allots each passage its act's branching."},
+        {"id": "choices", "label": "choices", "inside": "grow", "roles": ["frontier_choices"],
+         "reads": ["branching", "guidance"], "doc": "Choices out of a frontier passage, paced by the parent's act."},
+        {"id": "passage", "label": "passage", "inside": "grow", "roles": ["frontier_passage"],
+         "reads": ["guidance", "length", "ends_story"], "when": "in an act",
+         "doc": "The passage each choice leads to; may end the storyline early where the act allows it."},
+        {"id": "ending", "label": "ending", "inside": "grow", "roles": ["frontier_ending"],
+         "reads": ["ending.guidance", "ending.length"], "when": "in the Resolution",
+         "doc": "At the level past the last act every new passage is an ending."},
+        {"id": "continuity", "label": "continuity audit", "inside": "grow", "roles": ["audit_continuity"],
+         "reads": ["policy.refine"], "when": "refine on", "doc": "Checks the draft against the story so far."},
+        {"id": "canon", "label": "canon audit", "inside": "grow", "roles": ["audit_canon"],
+         "reads": ["policy.refine"], "when": "refine on, story has lore or events",
+         "doc": "Checks the draft against WORLD and TIMELINE."},
+        {"id": "revise", "label": "revise", "inside": "grow", "roles": ["revise_passage"],
+         "reads": ["policy.refine"], "when": "an audit verified issues", "doc": "Fixes the verified issues, nothing else."},
+        {"id": "gather", "label": "gather", "reads": ["depth", "max_seconds"],
+         "doc": "Collects the level; finishes at the plan's depth or the time guard."},
+        {"id": "review", "label": "review", "reads": ["steer"], "when": "not unattended",
+         "doc": "Pauses between levels for the author to steer or stop."},
+    ],
+    "edges": [["plan", "choices"], ["choices", "passage"], ["choices", "ending"],
+              ["passage", "continuity"], ["passage", "canon"], ["ending", "continuity"], ["ending", "canon"],
+              ["continuity", "revise"], ["canon", "revise"], ["passage", "gather"], ["ending", "gather"],
+              ["revise", "gather"], ["gather", "review"], ["review", "plan"]],
+}
+
+
+def _graph_loop(g: dict[str, Any], name: str) -> dict[str, Any]:
+    """A loop drawn straight from a graph's topology, for workflows with no hand-opened node."""
+    steps = [{"id": n["id"], "label": n["id"], "roles": NODE_PROMPTS.get((name, n["id"]), [])}
+             for n in g["nodes"] if not n["id"].startswith("__")]
+    ids = {s["id"] for s in steps}
+    return {"steps": steps, "edges": [[e["source"], e["target"]] for e in g["edges"]
+                                      if e["source"] in ids and e["target"] in ids]}
+
+
 def workflow_json() -> dict[str, dict[str, Any]]:
-    """Topology per workflow for the Agents view: {"nodes": [...], "edges": [...]},
-    each node carrying the prompt roles it composes (NODE_PROMPTS)."""
+    """Topology per workflow for the Agents view: {"nodes": [...], "edges": [...], "loop": {...}},
+    each node carrying the prompt roles it composes (NODE_PROMPTS), and `loop` the steps
+    the view draws (FRONTIER_LOOP, or the nodes themselves)."""
     graphs = {"verb": VERB_GRAPH.get_graph().to_json(),
               **{name: build().compile().get_graph().to_json() for name, (build, _) in WORKFLOWS.items()}}
     for name, g in graphs.items():
         for n in g["nodes"]:
             n["prompts"] = NODE_PROMPTS.get((name, n["id"]), [])
+        loop = FRONTIER_LOOP if name == "expand_frontier" else _graph_loop(g, name)
+        g["loop"] = {"steps": [{"roles": [], "reads": [], **s} for s in loop["steps"]], "edges": loop["edges"]}
     return graphs

@@ -2,8 +2,8 @@
 // tail of every running one. The stream drives three things — `activity`
 // (passage → phase; the map pulses that card, `done` clears it), `progress`
 // (applied to the row as the backend sends it, whole), and `node` (a finished
-// grow / check_passage means rows landed, so the graph is reloaded; the last
-// node per run feeds the Agents view). `status` closes the stream.
+// grow / check_passage means rows landed, so the graph is reloaded). `status`
+// closes the stream.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type AgentRun, type RunCreate, type RunEvent } from './api'
@@ -16,7 +16,6 @@ export function useRuns(storyId: number, deps: { reload: () => void; model: stri
   const guard = guardWith(setError)
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [activity, setActivity] = useState<Record<number, string>>({})
-  const [lastNode, setLastNode] = useState<Record<number, string>>({})
   const streams = useRef<Record<number, EventSource>>({})
 
   const refreshRuns = useCallback(() => {
@@ -53,7 +52,6 @@ export function useRuns(storyId: number, deps: { reload: () => void; model: stri
             break
           }
           case 'node':
-            setLastNode((n) => ({ ...n, [run.id]: ev.node }))
             if (LANDS_ROWS.has(ev.node)) reload()
             break
           case 'status':
@@ -85,5 +83,5 @@ export function useRuns(storyId: number, deps: { reload: () => void; model: stri
     patchRun(id, () => run)
   })
 
-  return { runs, activity, lastNode, refreshRuns, startRun, resumeRun, cancelRun }
+  return { runs, activity, refreshRuns, startRun, resumeRun, cancelRun }
 }

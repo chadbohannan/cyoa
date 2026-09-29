@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 LoreKind = Literal["character", "place", "faction", "rule"]
 VariableKind = Literal["flag", "stat", "item"]
@@ -188,9 +188,47 @@ Workflow = Literal["canon_check", "expand_frontier"]
 RunStatus = Literal["running", "paused", "done", "failed", "cancelled"]
 
 
+class PacingAct(BaseModel):
+    """One act of a pacing plan (concepts/act-pacing.md): a span of levels whose
+    passages share guidance and a target length, and whose choices are capped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    levels: int = Field(ge=1, le=10)
+    branching: int = Field(ge=1, le=6)
+    ends_story: bool = True  # whether a storyline may end early inside this act
+    length: str = ""  # target prose length, as the prompt should say it ("150–250 words")
+    guidance: str = ""
+
+
+class PacingEnding(BaseModel):
+    """The plan's fixed last level: every passage there is an ending (frontier_ending)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    length: str = ""
+    guidance: str = ""
+
+
+class PacingPlan(BaseModel):
+    """A story's pacing plan; a run copies it into its budget. Depth is derived:
+    the acts' levels plus one for the ending, and it is a hard cap. `steer`,
+    `max_seconds` and `policy` (auto_accept_unreviewed, refine) are run-wide."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    acts: list[PacingAct] = Field(min_length=1)
+    ending: PacingEnding = Field(default_factory=PacingEnding)
+    steer: str = ""
+    max_seconds: int = Field(1800, ge=10)
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunCreate(BaseModel):
-    """Start a workflow from a map selection. `budget` keys default per workflow
-    (expand_frontier: max_passages, depth, max_seconds). `policy` controls automation:
+    """Start a workflow from a map selection. For expand_frontier, `budget` is a
+    PacingPlan, or empty for the story's saved plan; `steer` and `policy` given here
+    override the plan's. `policy` controls automation:
     auto_accept_unreviewed (bool) auto-accepts proposals on unreviewed passages,
     skip_review_interrupt (bool) skips the review pause between levels, refine (dict)
     tunes expand_frontier's draft/audit/revise loop (see agents.DEFAULT_REFINE)."""
@@ -245,10 +283,15 @@ class PromptUpdate(BaseModel):
 
 
 class PromptPreviewRequest(BaseModel):
-    """Assemble a role for one passage without calling the model; `text` previews an unsaved draft."""
+    """Assemble a role for one passage without calling the model; `text` previews an unsaved draft.
+    `stage` fills the pacing slots as that stage of the plan would (an act's index, or
+    len(acts) for the ending; omitted, the first act's), and `plan` previews an unsaved
+    plan instead of the story's saved one."""
 
     passage_id: int
     text: str | None = None
+    stage: int | None = None
+    plan: PacingPlan | None = None
 
 
 class PromptPreview(BaseModel):

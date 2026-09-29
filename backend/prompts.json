@@ -1,1 +1,3 @@
-{}
+{
+  "frontier_choices": "Suggest new choices for PASSAGE that are distinct from EXISTING CHOICES. Offer at most {branching} choices, and fewer when the moment holds fewer real options. This storyline has at most {remaining} passages left, counting the one each choice leads to: as that number shrinks, prefer choices that move toward a resolution over ones that open new threads. This part of the story has {act_remaining} passages left after PASSAGE. Its direction: {act_guidance}"
+}

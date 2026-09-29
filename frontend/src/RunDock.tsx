@@ -1,36 +1,39 @@
-// The run dock under the map: start expand_frontier from the selected passage,
-// and watch, steer, resume or cancel every run of this story. Proposals a run
-// filed are reviewed in the inspector like any other; "Review" jumps there.
+// The run dock under the map: start expand_frontier from the selected passage
+// under the story's pacing plan, and watch, steer, resume or cancel every run of
+// this story. The plan itself is edited in the Agents view; the dock shows it in
+// one line. Proposals a run filed are reviewed in the inspector like any other;
+// "Review" jumps there.
 
 import { useState } from 'react'
 import type { AgentRun, Passage } from './api'
 import type { Selection } from './StoryCanvas'
-import { describeProgress, WORKFLOW_LABEL } from './runs'
+import { describePlan, describeProgress, WORKFLOW_LABEL } from './runs'
+import type { PacingStore } from './usePacing'
 import type { StoryStore } from './useStory'
 
 type Props = {
   store: StoryStore
+  pacing: PacingStore
   root: Passage | null // the single selected passage, if any
   onSelect: (s: Selection) => void
-  onShowRun: (runId: number) => void // open the Agents view on this run
+  onEditPacing: () => void // open the Agents view on the plan
 }
 
-export function RunDock({ store, root, onSelect, onShowRun }: Props) {
+export function RunDock({ store, pacing, root, onSelect, onEditPacing }: Props) {
   const { runs, graph } = store
+  const { plan } = pacing
   const [open, setOpen] = useState(true)
-  const [depth, setDepth] = useState(2)
-  const [branching, setBranching] = useState(3)
-  const [steer, setSteer] = useState('')
   const [skipInterrupt, setSkipInterrupt] = useState(false)
   const live = runs.filter((r) => r.status === 'running' || r.status === 'paused').length
 
+  // The plan goes with the request, so the run copies what the author sees even
+  // while an edit is still waiting to autosave.
   const expand = () => {
-    if (!root) return
+    if (!root || !plan) return
     store.startRun({
       workflow: 'expand_frontier',
       scope: [root.id],
-      steer: steer || null,
-      budget: { depth, branching },
+      budget: plan,
       policy: { skip_review_interrupt: skipInterrupt },
     })
   }
@@ -52,19 +55,20 @@ export function RunDock({ store, root, onSelect, onShowRun }: Props) {
           <div className="row wrap run-form" title="grow the story outward from the selected passage">
             <span className="kind">Expand</span>
             <span className="muted small">{root ? `from "${root.title}"` : 'select one passage'}</span>
-            <label className="small" title="levels grown below the selected passage; the last level's passages are endings">depth <input type="number" min={1} max={6} value={depth} onChange={(e) => setDepth(Number(e.target.value))} className="tiny" /></label>
-            <label className="small" title="most choices out of any one passage">branching <input type="number" min={1} max={6} value={branching} onChange={(e) => setBranching(Number(e.target.value))} className="tiny" /></label>
-            <input placeholder="direction for the writer (optional)" value={steer} onChange={(e) => setSteer(e.target.value)} className="steer" />
-            <label className="small row">
+            <button className="link small plan-summary" onClick={onEditPacing} title="edit the pacing plan in the Agents view">
+              {plan ? describePlan(plan) : pacing.error ?? 'loading plan…'}
+            </button>
+            <span className="spacer" />
+            <label className="small row" title="don't pause for review between levels">
               <input type="checkbox" checked={skipInterrupt} onChange={(e) => setSkipInterrupt(e.target.checked)} />
               Unattended
             </label>
-            <button className="primary" disabled={!root} onClick={expand}>Start</button>
+            <button className="primary" disabled={!root || !plan} onClick={expand}>Run</button>
           </div>
           {runs.length > 0 && (
             <ul className="run-list">
               {runs.map((run) => (
-                <RunRow key={run.id} run={run} store={store} onReview={() => review(run)} onShow={() => onShowRun(run.id)} />
+                <RunRow key={run.id} run={run} store={store} onReview={() => review(run)} />
               ))}
             </ul>
           )}
@@ -74,7 +78,7 @@ export function RunDock({ store, root, onSelect, onShowRun }: Props) {
   )
 }
 
-function RunRow({ run, store, onReview, onShow }: { run: AgentRun; store: StoryStore; onReview: () => void; onShow: () => void }) {
+function RunRow({ run, store, onReview }: { run: AgentRun; store: StoryStore; onReview: () => void }) {
   const [steer, setSteer] = useState(run.params.steer ?? '')
   const active = run.status === 'running' || run.status === 'paused'
   return (
@@ -94,7 +98,6 @@ function RunRow({ run, store, onReview, onShow }: { run: AgentRun; store: StoryS
       )}
       {active && <button className="danger" onClick={() => store.cancelRun(run.id)}>Cancel</button>}
       {run.pending_proposals > 0 && <button onClick={onReview}>Review {run.pending_proposals} proposal{run.pending_proposals > 1 ? 's' : ''}</button>}
-      <button className="link small" onClick={onShow}>workflow</button>
     </li>
   )
 }

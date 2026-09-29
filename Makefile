@@ -30,13 +30,12 @@ test-frontend: ## typecheck + build
 	cd frontend && npx tsc -b && npm run build
 
 ITER ?= 3
-DEPTH ?= 3
-BRANCH ?= 3
+PLAN ?=
 REPEAT ?= 1
 POLICY ?= {}
 CONCURRENCY ?=
-eval: ## storyline eval on a private backend: ITER premises grown DEPTH levels, BRANCH choices max (JUDGE=1 to model-grade, POLICY='{"refine":{"rounds":2}}' to refine, REPEAT=n to compare arms, CONCURRENCY=10 to fan out against a pooled backend)
-	uv run --project backend python scripts/eval_storylines.py run --iterations $(ITER) --depth $(DEPTH) --branching $(BRANCH) --repeat $(REPEAT) --policy '$(POLICY)' $(if $(CONCURRENCY),--concurrency $(CONCURRENCY)) $(if $(JUDGE),--judge)
+eval: ## storyline eval on a private backend: ITER premises grown under the default pacing plan (PLAN=plan.json for another, JUDGE=1 to model-grade, POLICY='{"refine":{"rounds":2}}' to refine, REPEAT=n to compare arms, CONCURRENCY=10 to fan out against a pooled backend)
+	uv run --project backend python scripts/eval_storylines.py run --iterations $(ITER) $(if $(PLAN),--plan $(PLAN)) --repeat $(REPEAT) --policy '$(POLICY)' $(if $(CONCURRENCY),--concurrency $(CONCURRENCY)) $(if $(JUDGE),--judge)
 
 lint-wiki: ## structural lint of the wiki
 	cd wiki/cyoa-wiki && python3 scripts/lint-wiki.py .

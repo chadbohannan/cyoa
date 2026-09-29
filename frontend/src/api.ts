@@ -173,13 +173,35 @@ export interface RunProgress {
   restarts?: number
 }
 
+// A story's pacing plan (models.PacingPlan; concepts/act-pacing.md). Depth is derived:
+// the acts' levels plus one for the ending.
+export interface PacingAct {
+  name: string
+  levels: number
+  branching: number // most choices out of a passage in this act
+  ends_story: boolean // a storyline may end early inside this act
+  length: string // target prose length, as the prompt says it
+  guidance: string
+}
+
+export interface PacingPlan {
+  acts: PacingAct[]
+  ending: { length: string; guidance: string }
+  steer: string
+  max_seconds: number
+  policy: Pick<RunPolicy, 'auto_accept_unreviewed' | 'refine'>
+}
+
+// What a run keeps of its plan: a copy, plus the derived depth.
+export type RunBudget = Partial<PacingPlan> & { depth?: number }
+
 export interface RunCreate {
   workflow: Workflow
   scope: number[]
   model?: string | null
-  steer?: string | null
-  budget?: { depth?: number; branching?: number; max_passages?: number | null; max_seconds?: number }
-  policy?: RunPolicy
+  steer?: string | null // over the plan's
+  budget?: PacingPlan | Record<string, never> // empty: the story's saved plan
+  policy?: RunPolicy // over the plan's
 }
 
 export interface AgentRun {
@@ -190,7 +212,7 @@ export interface AgentRun {
   // `prompts` is the run's snapshot of every role, taken at start (runs.py)
   params: { model?: string | null; steer?: string | null; prompts?: Record<string, string> }
   scope: number[]
-  budget: { depth?: number; branching?: number; max_passages?: number | null; max_seconds?: number }
+  budget: RunBudget
   policy: RunPolicy
   status: RunStatus
   progress: RunProgress
@@ -216,10 +238,22 @@ export interface RunState {
   history: { step: number | null; next: string[]; created_at: string | null }[]
 }
 
+// One step of the loop the Agents view draws (agents.FRONTIER_LOOP, or a graph's own nodes).
+export interface LoopStep {
+  id: string
+  label: string
+  roles: string[] // prompt roles it composes
+  reads: string[] // plan fields it takes; act fields unprefixed
+  when?: string // the condition it runs under
+  inside?: string // the graph node it runs inside
+  doc?: string
+}
+
 // compiled.get_graph().to_json(); `prompts` is the roles a node composes (agents.NODE_PROMPTS)
 export interface WorkflowGraph {
   nodes: { id: string; type?: string; data?: unknown; prompts: string[] }[]
   edges: { source: string; target: string; conditional?: boolean }[]
+  loop: { steps: LoopStep[]; edges: [string, string][] }
 }
 
 // --- prompts (global roles; see prompts.py) ------------------------------------
@@ -241,6 +275,8 @@ export interface PromptUpdate {
 export interface PromptPreviewRequest {
   passage_id: number
   text?: string | null // an unsaved draft to preview instead of the saved text
+  stage?: number | null // fill the pacing slots as this stage of the plan would (len(acts) = the ending)
+  plan?: PacingPlan | null // an unsaved plan to preview instead of the story's saved one
 }
 
 export interface StoryGraph {
@@ -387,6 +423,12 @@ export const api = {
     events: (storyId: number, id: number, after = 0) => new EventSource(`/api/stories/${storyId}/runs/${id}/events?after=${after}`),
   },
   workflows: () => request<Record<string, WorkflowGraph>>('/agents/workflows'),
+  pacing: {
+    get: (storyId: number) => request<PacingPlan>(`/stories/${storyId}/pacing`),
+    save: (storyId: number, plan: PacingPlan) =>
+      request<PacingPlan>(`/stories/${storyId}/pacing`, { method: 'PUT', body: JSON.stringify(plan) }),
+    reset: (storyId: number) => request<PacingPlan>(`/stories/${storyId}/pacing`, { method: 'DELETE' }),
+  },
   prompts: {
     list: () => request<PromptInfo[]>('/agents/prompts'),
     save: (key: string, body: PromptUpdate) =>

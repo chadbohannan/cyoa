@@ -76,30 +76,40 @@ PROMPTS: dict[str, Prompt] = {
         "the passage body text only (no title, no heading), rewritten with the smallest edits that repair every issue "
         "listed — none of the contradicted claims may survive in it.",
     ),
+    # The frontier roles are one set for every act of the pacing plan (concepts/act-pacing.md);
+    # the act's fields reach them through {act_guidance}, {length} and {act_remaining}.
     "frontier_choices": Prompt(
-        "Frontier choices", "expand_frontier: choices out of a frontier passage, each leading somewhere new. "
-        "{branching} is the most choices the run will keep; {remaining} counts the passages this storyline has "
-        "left, including the one each choice leads to (1 means that passage is an ending).",
+        "Frontier choices", "expand_frontier: choices out of a frontier passage, each leading somewhere new, paced "
+        "by the passage's act. {branching} is the act's most choices; {remaining} counts the passages this storyline "
+        "has left, including the one each choice leads to (1 means that passage is an ending); {act_remaining} counts "
+        "the passages this act has left after PASSAGE (0 means these choices lead out of it); {act_guidance} is the "
+        "act's guidance.",
         _SUGGEST_CHOICES + " Every target_title must be NEW — not in ALL PASSAGE TITLES — because the story is growing "
         "outward here; do not lead back to an existing passage. Offer at most {branching} choices, and fewer when the "
         "moment holds fewer real options. This storyline has at most {remaining} passages left, counting the one each "
-        "choice leads to: as that number shrinks, prefer choices that move toward a resolution over ones that open new threads.",
-        ("branching", "remaining"),
+        "choice leads to: as that number shrinks, prefer choices that move toward a resolution over ones that open new "
+        "threads. This part of the story has {act_remaining} passages left after PASSAGE. Its direction: {act_guidance}",
+        ("branching", "remaining", "act_remaining", "act_guidance"),
     ),
     "frontier_passage": Prompt(
-        "Frontier passage", "expand_frontier: the new passage a frontier choice leads to, before the last level. "
-        "{remaining} counts the passages this storyline has left, including this one.",
-        _DRAFT_TARGET + " This storyline has at most {remaining} passages left, counting this one: pace it toward a "
-        "resolution as that number shrinks. Set ends_story only if this passage is a natural, satisfying conclusion.",
-        ("choice", "remaining"),
+        "Frontier passage", "expand_frontier: the new passage a frontier choice leads to, in one of the plan's acts. "
+        "{remaining} counts the passages this storyline has left, including this one; {act_remaining} the passages "
+        "its act has left, including this one; {length} and {act_guidance} are the act's. ends_story is offered only "
+        "where the act allows early endings.",
+        _DRAFT_TARGET + " Write about {length}. This storyline has at most {remaining} passages left, counting this "
+        "one, and this part of the story has {act_remaining}: pace it toward the next turn as those numbers shrink. "
+        "Its direction: {act_guidance} If you are given an ends_story field, set it only when this passage is a "
+        "natural conclusion of what the reader chose, a good end or a bad one.",
+        ("choice", "remaining", "act_remaining", "length", "act_guidance"),
     ),
     "frontier_ending": Prompt(
-        "Frontier ending", "expand_frontier: the passage a choice leads to at the run's last level, written as an ending.",
+        "Frontier ending", "expand_frontier: the passage a choice leads to at the plan's ending, the level after its "
+        "last act, written as an ending. {length} and {act_guidance} are the ending's.",
         "The reader took the choice '{choice}' from PASSAGE, and the passage it leads to is the last in this storyline. "
-        "Write it: a title and body that follow directly from that choice and bring the story to a conclusion — success, "
-        "failure, or a decisive turn — consistent with everything the reader has seen. Resolve or clearly close the "
+        "Write it: a title and body of about {length} that follow directly from that choice and bring the story to a "
+        "conclusion consistent with everything the reader has seen. {act_guidance} Resolve or clearly close the "
         "central question; do not end on a cliffhanger or offer further choices.",
-        ("choice",),
+        ("choice", "length", "act_guidance"),
     ),
     "audit_continuity": Prompt(
         "Audit continuity", "refine: check a drafted passage against the story so far, not today's WORLD/TIMELINE rubric "

@@ -42,11 +42,11 @@ When updating wiki pages, maintain cross-references. Add links to the index for 
 backend/                 # uv project (Python 3.12), FastAPI
 ├── src/cyoa/
 │   ├── main.py          # app, /api routes, `cyoa` console script (uvicorn on :8765)
-│   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, events, proposals, agent_runs)
+│   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, events, proposals, agent_runs, pacing, audits)
 │   ├── models.py        # Pydantic shapes mirroring the tables
 │   ├── engine.py        # condition/effects evaluator, play state, problems checks, subtree, merge candidates, random playtest
 │   ├── twee.py          # Twee 3 / SugarCube export
-│   ├── agents.py        # LangGraph workflows: verbs, canon_check, expand_frontier; the model-call gate; RunHandle
+│   ├── agents.py        # LangGraph workflows: verbs, canon_check, expand_frontier (paced by the story's act plan); the model-call gate; RunHandle
 │   ├── runs.py          # background runs: threads, SQLite checkpoints (cyoa-agent.db), SSE log, resume/cancel
 │   ├── prompts.py       # prompt roles: defaults, overrides in backend/prompts.json (committed), validate
 │   └── llm.py           # model backend: CYOA_LLM=ollama|openai (llama-server :8080/v1 by default via make)
@@ -66,8 +66,9 @@ frontend/                # Vite + React + TypeScript
     ├── clauses.tsx      # clause-row editors for condition / effects
     ├── Player.tsx       # reader view: play/start, play/choose, debug drawer, random-playtest panel
     ├── Proposals.tsx    # assist toolbar, proposal list, Accept/Reject panel
-    ├── RunDock.tsx      # run dock under the map: expand form, run rows (resume/stop/cancel/review)
-    ├── AgentsView.tsx   # workflow topology; node / prompt / run inspector
+    ├── RunDock.tsx      # run dock under the map: plan summary + Run, run rows (resume/stop/cancel/review)
+    ├── AgentsView.tsx   # pacing plan editor: act timeline over the per-level loop; prompt editors per step
+    ├── usePacing.ts     # the story's pacing plan (acts + ending); autosaves
     ├── runs.ts          # run labels shared by the dock and Agents view
     └── LoreView.tsx     # lore entries and events timeline
 Makefile                 # install / backend / frontend / test / lint-wiki

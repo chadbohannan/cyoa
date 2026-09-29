@@ -1,12 +1,13 @@
 """Unattended storyline evaluation: seed stories, grow them with expand_frontier, render every storyline.
 
-    uv run --project backend python scripts/eval_storylines.py run [--iterations N] [--depth D] [--branching B] [--judge]
+    uv run --project backend python scripts/eval_storylines.py run [--iterations N] [--plan plan.json] [--judge]
     uv run --project backend python scripts/eval_storylines.py judge eval-out/<stamp>
 
 `run` starts a private backend (port 8766, CYOA_LLM=openai unless --llm says otherwise) whose
 story and checkpoint databases live in the output folder, so the dev database is never touched.
 For each premise in scripts/eval-premises.json it creates a story, writes the opening passage,
-runs expand_frontier with the skip_review_interrupt policy, then writes:
+runs expand_frontier with the skip_review_interrupt policy under a pacing plan (--plan, a JSON
+PacingPlan; default: the backend's default plan), then writes:
 
     eval-out/<stamp>/<n>-<slug>.md     every root-to-leaf storyline as continuous prose, plus stats
     eval-out/<stamp>/<n>-<slug>.json   the same paths as data (what `judge` reads)
@@ -314,8 +315,11 @@ def cmd_run(a: argparse.Namespace) -> None:
     # Refinement multiplies call count per step (refinement-loops.md's "Time" section);
     # give a refined run more room unless the caller set --max-seconds explicitly.
     max_seconds = a.max_seconds if a.max_seconds is not None else (7200 * 5 if refining else 7200)
-    budget = {"depth": a.depth, "branching": a.branching, "max_passages": a.max_passages, "max_seconds": max_seconds}
-    log(f"output {out}; budget {budget}; policy {policy}; concurrency {a.concurrency or '(default)'}; "
+    # The run's budget is a pacing plan (concepts/act-pacing.md): the file given, or the
+    # backend's default, read from the first story once it exists.
+    plan = json.loads(Path(a.plan).read_text()) if a.plan else None
+    budget: dict[str, Any] = {}
+    log(f"output {out}; plan {a.plan or '(default)'}; policy {policy}; concurrency {a.concurrency or '(default)'}; "
         f"{len(premises)} premises x {a.repeat} repeat(s)")
     be = Backend(out, a.port, a.llm, a.concurrency)
     rows = []
@@ -327,6 +331,9 @@ def cmd_run(a: argparse.Namespace) -> None:
                 log(f"[{n}/{len(premises)}{f' rep {k}/{a.repeat}' if a.repeat > 1 else ''}] {premise['title']}")
                 t0 = time.time()
                 sid, start = seed(be, premise)
+                if not budget:
+                    budget = {**(plan or be.call("GET", f"/stories/{sid}/pacing")), "max_seconds": max_seconds}
+                    log(f"  plan: {json.dumps(budget)}")
                 run = expand(be, sid, start, budget, premise.get("steer"), policy)
                 retries = retry_reasons(be, sid, run["id"])
                 audits = audit_stats(out / "cyoa.db", sid)
@@ -340,7 +347,7 @@ def cmd_run(a: argparse.Namespace) -> None:
                     f"{stats['seconds']}s" + (f", error: {stats['run_error']}" if stats["run_error"] else ""))
     finally:
         be.stop()
-    idx = ["# Storyline eval", "", f"Budget: `{json.dumps(budget)}`, policy: `{json.dumps(policy)}`, llm: `{a.llm}`", "",
+    idx = ["# Storyline eval", "", f"Plan: `{json.dumps(budget)}`, policy: `{json.dumps(policy)}`, llm: `{a.llm}`", "",
            "| story | status | passages | storylines | endings | unfinished | length | stub bodies | stub choices | retries | unresolved | dropped | seconds | error |",
            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     idx += [f"| [{stem}]({stem}.md) | {s['run_status']} | {s['agent_passages']} | {s['storylines']} | {s['endings']} | {s['unfinished']} | "
@@ -357,9 +364,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="seed, expand and report each premise")
     r.add_argument("--iterations", type=int, default=3, help="how many premises from eval-premises.json")
-    r.add_argument("--depth", type=int, default=3, help="levels below the opening; the last level writes endings")
-    r.add_argument("--branching", type=int, default=3, help="most choices out of any one passage")
-    r.add_argument("--max-passages", type=int, default=None, help="optional extra cap (default: none)")
+    r.add_argument("--plan", help="a pacing plan as JSON (models.PacingPlan: acts, ending); default: the backend's")
     r.add_argument("--max-seconds", type=int, default=None, help="per run, a guard not a target "
                     "(default: 7200, or 36000 when policy.refine.rounds > 0)")
     r.add_argument("--policy", default="{}", help="JSON merged into the run's policy, e.g. "
