@@ -1,20 +1,25 @@
 import { useEffect, useState } from 'react'
 import { AgentsView } from './AgentsView'
-import { api } from './api'
 import { Inspector } from './Inspector'
 import { Library } from './Library'
 import { LoreView } from './LoreView'
+import { useInterview } from './useInterview'
 import { Player } from './Player'
+import { Settings } from './Settings'
 import { RunDock } from './RunDock'
 import { StoryCanvas, type Selection } from './StoryCanvas'
 import { usePacing } from './usePacing'
 import { usePrompts, type PromptStore } from './usePrompts'
-import { useStory, type StoryStore } from './useStory'
+import { useStory } from './useStory'
 
 type Tab = 'map' | 'lore' | 'play' | 'agents'
 const TABS: [Tab, string][] = [['map', 'Map'], ['lore', 'Lore'], ['play', 'Play'], ['agents', 'Agents']]
 
 // The story id lives in the URL hash so a reload lands on the same story.
+function hashSettings(): boolean {
+  return location.hash === '#/settings'
+}
+
 function hashStory(): number | null {
   const m = location.hash.match(/^#\/story\/(\d+)/)
   return m ? Number(m[1]) : null
@@ -22,10 +27,14 @@ function hashStory(): number | null {
 
 export default function App() {
   const [storyId, setStoryId] = useState<number | null>(hashStory)
+  const [settings, setSettings] = useState(hashSettings)
   // Prompt roles are global, so their drafts live above any one story.
   const prompts = usePrompts()
   useEffect(() => {
-    const onHash = () => setStoryId(hashStory())
+    const onHash = () => {
+      setStoryId(hashStory())
+      setSettings(hashSettings())
+    }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
@@ -33,6 +42,9 @@ export default function App() {
     location.hash = id === null ? '' : `#/story/${id}`
   }
 
+  // Back from Settings returns to wherever it was opened from, or the Library when it was the landing page.
+  const closeSettings = () => (history.length > 1 ? history.back() : open(null))
+  if (settings) return <Settings onBack={closeSettings} />
   if (storyId === null) return <Library onOpen={open} />
   return <StoryShell key={storyId} storyId={storyId} prompts={prompts} onBack={() => open(null)} />
 }
@@ -40,6 +52,8 @@ export default function App() {
 function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: PromptStore; onBack: () => void }) {
   const store = useStory(storyId)
   const pacing = usePacing(storyId)
+  // held here, not in the Lore tab, so a turn in flight survives switching tabs
+  const interview = useInterview(store)
   const [tab, setTab] = useState<Tab>('map')
   const [selection, setSelection] = useState<Selection>(null)
   // "Play from here" on the map; null plays from the story's start passage
@@ -65,13 +79,13 @@ function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: Pr
         </nav>
         <span className="spacer" />
         {error && <span className="error">{error}</span>}
-        <ModelPicker store={store} />
+        <a className="link" href="#/settings" title="model and concurrency">Settings</a>
       </header>
       <main>
         {!graph ? (
           <p className="hint">Loading…</p>
         ) : tab === 'lore' ? (
-          <LoreView store={store} />
+          <LoreView store={store} interview={interview} />
         ) : tab === 'play' ? (
           <Player key={playFrom ?? 'start'} store={store} from={playFrom} onStop={() => setPlayFrom(null)} />
         ) : tab === 'agents' ? (
@@ -95,22 +109,5 @@ function StoryShell({ storyId, prompts, onBack }: { storyId: number; prompts: Pr
         )}
       </main>
     </div>
-  )
-}
-
-// Which Ollama model the assist verbs use; blank means the backend's default.
-function ModelPicker({ store }: { store: StoryStore }) {
-  const [models, setModels] = useState<string[] | null>(null)
-  const [err, setErr] = useState(false)
-  useEffect(() => {
-    api.llmModels().then(setModels).catch(() => setErr(true))
-  }, [])
-  if (err) return <span className="muted small" title="Ollama unreachable">no model</span>
-  return (
-    <select className="model" value={store.model ?? ''} onChange={(e) => store.setModel(e.target.value || null)} title="model for Assist">
-      <option value="">default model</option>
-      {(models ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
-      {store.model && !models?.includes(store.model) && <option value={store.model}>{store.model}</option>}
-    </select>
   )
 }

@@ -1,6 +1,8 @@
-// The editable story map: passages as nodes, choices as edges. Layout lives on
-// the passage rows (pos_x / pos_y) and is persisted on drag stop; everything
-// else the canvas does is a call into the story store.
+// The editable story map: passages as nodes, choices as edges. With auto layout
+// on (the default) positions are derived from the graph's structure (layout.ts)
+// and cards cannot be dragged; with it off they come from the passage rows
+// (pos_x / pos_y) and are persisted on drag stop. Everything else the canvas
+// does is a call into the story store.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import {
@@ -24,6 +26,8 @@ import {
 import '@xyflow/react/dist/style.css'
 import { api, type Choice, type Passage, type Problems, type Proposal } from './api'
 import type { StoryStore } from './useStory'
+import { confirmDelete, confirmPrune } from './prune'
+import { tidyLayout, type Shape } from './layout'
 
 export type Selection =
   | { kind: 'passage'; id: number }
@@ -44,7 +48,6 @@ type PassageData = {
   mergeWith: number // other passages sharing its scene (problems overlay on)
   proposals: number // pending edits to this passage
   notes: number // pending canon_check notes
-  unresolvedAudit: boolean // refinement gave up on this passage with issues still open
   activity: string | null // what a run is doing to this passage right now
   collapsed: Subtree | null // this card stands in for a hidden subtree
 }
@@ -86,10 +89,9 @@ function PassageCard({ data, selected }: NodeProps<PassageNode>) {
       {data.unreachable && <div className="passage-card-problem">unreachable</div>}
       {data.isUnfinished && <div className="passage-card-problem" title="no choices yet, and not marked as an ending">unfinished</div>}
       {data.dangling > 0 && <div className="passage-card-problem">{data.dangling} dangling choice{data.dangling > 1 ? 's' : ''}</div>}
-      {data.mergeWith > 0 && <div className="passage-card-merge" title="same time, location and events as another passage">⧉ merge candidate ×{data.mergeWith + 1}</div>}
+      {data.mergeWith > 0 && <div className="passage-card-merge" title="same time and location as another passage">⧉ merge candidate ×{data.mergeWith + 1}</div>}
       {data.proposals > 0 && <div className="passage-card-proposal">✎ {data.proposals} proposed edit{data.proposals > 1 ? 's' : ''}</div>}
       {data.notes > 0 && <div className="passage-card-problem">⚠ {data.notes} canon note{data.notes > 1 ? 's' : ''}</div>}
-      {data.unresolvedAudit && <div className="passage-card-problem">⚠ refinement flagged this passage</div>}
       {data.activity && <div className="passage-card-activity">✍ {ACTIVITY_LABEL[data.activity] ?? data.activity}</div>}
       {data.collapsed && (
         <div className="passage-card-collapsed" title="right-click → Expand subtree">
@@ -204,6 +206,20 @@ function useCollapsed(storyId: number) {
   return { collapsed, toggle }
 }
 
+// Auto layout is remembered per story in this browser, on unless switched off.
+const autoKey = (storyId: number) => `cyoa.autolayout.${storyId}`
+
+function useAutoLayout(storyId: number) {
+  const [auto, setAutoState] = useState<boolean>(() => {
+    try { return localStorage.getItem(autoKey(storyId)) !== 'off' } catch { return true }
+  })
+  const setAuto = useCallback((on: boolean) => {
+    setAutoState(on)
+    try { localStorage.setItem(autoKey(storyId), on ? 'on' : 'off') } catch { /* private mode */ }
+  }, [storyId])
+  return { auto, setAuto }
+}
+
 // New choices go after a passage's existing ones.
 function nextSortOrder(choices: Choice[], from: number) {
   const mine = choices.filter((c) => c.from_passage === from)
@@ -238,6 +254,7 @@ function useProblems(store: StoryStore, enabled: boolean) {
 function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props) {
   const { graph, activity } = store
   const { collapsed, toggle: toggleCollapsed } = useCollapsed(store.storyId)
+  const { auto, setAuto } = useAutoLayout(store.storyId)
   const { screenToFlowPosition } = useReactFlow()
   const wrapper = useRef<HTMLDivElement>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
@@ -253,12 +270,12 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
     const ids = sel.filter((n) => n.type === 'passage').map((n) => Number(n.id)).sort((a, b) => a - b)
     setScope((prev) => (prev.length === ids.length && prev.every((x, i) => x === ids[i]) ? prev : ids))
   }, [])
-  const hasWorld = (graph?.lore.length ?? 0) + (graph?.events.length ?? 0) > 0
+  const hasWorld = (graph?.lore.length ?? 0) > 0
   const canonScope = scope.length > 1 ? scope : []
   const checking = store.runs.some((r) => r.workflow === 'canon_check' && r.status === 'running')
 
-  const { initialNodes, initialEdges } = useMemo(() => {
-    if (!graph) return { initialNodes: [] as MapNode[], initialEdges: [] as Edge[] }
+  const { initialNodes, initialEdges, shape } = useMemo(() => {
+    if (!graph) return { initialNodes: [] as MapNode[], initialEdges: [] as Edge[], shape: { nodes: [], edges: [], root: null } as Shape }
     const outgoing = new Set(graph.choices.map((c) => c.from_passage))
     const q = query.trim().toLowerCase()
     const matches = (p: { title: string; body: string }) => !q || p.title.toLowerCase().includes(q) || p.body.toLowerCase().includes(q)
@@ -285,7 +302,6 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         mergeWith: mergeWith.get(p.id) ?? 0,
         proposals: graph.proposals.filter((q) => q.kind === 'edit_passage' && q.target_passage === p.id).length,
         notes: graph.proposals.filter((q) => q.kind === 'note' && q.target_passage === p.id).length,
-        unresolvedAudit: p.meta.audit?.verdict === 'unresolved',
         activity: activity[p.id] ?? null,
         collapsed: summaries.get(p.id) ?? null,
       },
@@ -300,6 +316,15 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         className: undeclared.has(c.id) ? 'problem' : undefined,
         markerEnd: { type: MarkerType.ArrowClosed },
       }))
+    // what auto layout reads: visible passages, their choices in order, then ghosts under their targets
+    const shape: Shape = {
+      nodes: initialNodes.map((n) => n.id).sort((a, b) => Number(a) - Number(b)),
+      edges: graph.choices
+        .filter((c) => c.to_passage !== null && !hidden.has(c.from_passage) && !hidden.has(c.to_passage))
+        .sort((a, b) => a.from_passage - b.from_passage || a.sort_order - b.sort_order || a.id - b.id)
+        .map((c) => [String(c.from_passage), String(c.to_passage)]),
+      root: graph.story.start_passage_id === null ? null : String(graph.story.start_passage_id),
+    }
     // proposals: ghost nodes for passages that would be created, dashed edges for choices
     for (const q of graph.proposals) {
       if (q.target_passage !== null && hidden.has(q.target_passage)) continue
@@ -307,6 +332,8 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
       const ghost = ghostFor(q)
       if (ghost) {
         initialNodes.push({ id: ghostId, type: 'ghost', position: ghost.pos, data: ghost.data })
+        shape.nodes.push(ghostId)
+        if (q.target_passage !== null) shape.edges.push([String(q.target_passage), ghostId])
       }
       const edge = edgeFor(q, graph.choices, ghost ? ghostId : null)
       if (edge && q.target_passage !== null) {
@@ -314,18 +341,27 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
           className: 'ghost', markerEnd: { type: MarkerType.ArrowClosed } })
       }
     }
-    return { initialNodes, initialEdges }
+    return { initialNodes, initialEdges, shape }
   }, [graph, query, problems, activity, collapsed])
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
+  // Auto layout reruns only when the structure changes: the serialized shape is
+  // the memo key, so text edits, search, and overlays never move a card.
+  const shapeKey = JSON.stringify(shape)
+  const layout = useMemo(() => (auto ? tidyLayout(JSON.parse(shapeKey) as Shape) : null), [auto, shapeKey])
+  const placedNodes = useMemo(
+    () => (layout ? initialNodes.map((n) => ({ ...n, position: layout.get(n.id) ?? n.position })) : initialNodes),
+    [initialNodes, layout],
+  )
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(placedNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
   // Graph changes rebuild nodes and edges but keep React Flow's selected flags.
   useEffect(() => {
     setNodes((prev) => {
       const sel = new Set(prev.filter((n) => n.selected).map((n) => n.id))
-      return initialNodes.map((n) => ({ ...n, selected: sel.has(n.id) }))
+      return placedNodes.map((n) => ({ ...n, selected: sel.has(n.id) }))
     })
-  }, [initialNodes, setNodes])
+  }, [placedNodes, setNodes])
   useEffect(() => {
     setEdges((prev) => {
       const sel = new Set(prev.filter((e) => e.selected).map((e) => e.id))
@@ -396,23 +432,29 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
   }, [])
 
   async function deletePassage(id: number) {
-    const inbound = graph?.choices.filter((c) => c.to_passage === id).length ?? 0
-    if (inbound > 0 && !confirm(`${inbound} choice(s) lead here and will dangle. Delete anyway?`)) return
-    await store.deletePassage(id)
+    if (!(await confirmDelete(store, id))) return
     if (selection?.kind === 'passage' && selection.id === id) onSelect(null)
   }
 
   async function prunePassage(id: number) {
-    if (!graph) return
-    const choices = graph.choices.filter((c) => c.from_passage === id).length
-    const below = collapseSubtrees(graph.passages, graph.choices, graph.story.start_passage_id, new Set([id])).summaries.get(id)
-    const reviewed = below?.reviewed ? ` (${below.reviewed} reviewed)` : ''
-    if (!confirm(`Delete ${choices} choice(s) and the ${below?.hidden ?? 0} passage(s) below them${reviewed}? Passages another branch reaches are kept.`)) return
-    const r = await store.prunePassage(id)
+    const r = await confirmPrune(store, id)
     if (!r) return
     const gone = new Set(r.passage_ids)
     if ((selection?.kind === 'passage' && gone.has(selection.id)) || (selection?.kind === 'choice' && r.choice_ids.includes(selection.id))) onSelect(null)
     if (collapsed.has(id)) toggleCollapsed(id) // nothing left below it to hide
+  }
+
+  // Switching auto layout off offers to keep the arrangement as the stored positions.
+  async function toggleAuto() {
+    if (!auto) return setAuto(true)
+    if (layout && graph && confirm('Keep the automatic arrangement? OK saves it as the passages\' positions; Cancel goes back to the positions you had.')) {
+      const positions = graph.passages.flatMap((p) => {
+        const at = layout.get(String(p.id))
+        return at ? [{ id: p.id, pos_x: at.x, pos_y: at.y }] : []
+      })
+      if (!(await store.saveLayout(positions))) return
+    }
+    setAuto(false)
   }
 
   const menuPassage = menu && graph?.passages.find((p) => p.id === menu.passageId)
@@ -433,15 +475,19 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
     : 0
 
   return (
-    <div ref={wrapper} className="canvas" onDoubleClick={onDoubleClick} onClick={() => setMenu(null)}>
+    <div ref={wrapper} className={`canvas${auto ? ' auto-layout' : ''}`} onDoubleClick={onDoubleClick} onClick={() => setMenu(null)}>
       <div className="canvas-tools" onDoubleClick={(e) => e.stopPropagation()}>
         <input placeholder="Search passages…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <button className={auto ? 'active' : ''} onClick={toggleAuto}
+          title={auto ? 'cards are arranged from the story\'s structure; switch off to place them by hand' : 'arrange cards from the story\'s structure'}>
+          Auto layout
+        </button>
         <button className={showProblems ? 'active' : ''} onClick={() => setShowProblems((v) => !v)}>
           Problems{problems ? ` (${problemCount})` : ''}
         </button>
         <button
           disabled={checking || !hasWorld}
-          title={hasWorld ? 'check passages against lore and events (runs in the background)' : 'add lore or events first'}
+          title={hasWorld ? 'check passages against lore (runs in the background)' : 'add lore first'}
           onClick={() => store.startRun({ workflow: 'canon_check', scope: canonScope })}
         >
           {checking ? 'Checking…' : canonScope.length ? `Canon check (${canonScope.length} selected)` : 'Canon check (all)'}
@@ -472,6 +518,7 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
+        nodesDraggable={!auto}
         onEdgesChange={onEdgesChange}
         onNodeDragStop={onNodeDragStop}
         onConnect={onConnect}
@@ -510,10 +557,10 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
             onClick={() => store.promote({ root: menu.passageId, reviewed: !menuPassage.reviewed })}>
             {menuPassage.reviewed ? 'Unreview subtree' : 'Promote subtree'}
           </button>
-          <button className="danger" title="delete this passage's choices and everything reachable only through them"
+          <button className="danger" title="delete this passage's choices and every passage below them to the leaves (passages the start reaches another way are kept)"
             disabled={!graph?.choices.some((c) => c.from_passage === menu.passageId)}
             onClick={() => prunePassage(menu.passageId)}>
-            Delete choices &amp; subtree
+            Delete subtree
           </button>
           <button className="danger" onClick={() => deletePassage(menu.passageId)}>
             Delete

@@ -47,6 +47,7 @@ class Live:
     events: list[dict[str, Any]] = field(default_factory=list)
     cancel: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
+    handle: agents.RunHandle | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -120,10 +121,31 @@ class Manager:
         if row["status"] in TERMINAL:
             return row
         if row["status"] == "running":
-            self.live[run_id].cancel.set()  # the thread notices at its next node and finishes as cancelled
+            # abort now: drop the model connection and let every waiting thread see the flag;
+            # the row reads cancelled at once and the thread's own finish agrees with it
+            live = self.live[run_id]
+            if live.handle:
+                live.handle.abort()
+            else:
+                live.cancel.set()
+            self._set_status(run_id, "cancelled")
         else:
             self._set_status(run_id, "cancelled")
         return self.get(run_id)
+
+    def clear(self, story_id: int) -> int:
+        """Forget the story's finished runs (done, failed, cancelled) and their checkpoints. Running and
+        paused runs stay, and so does a run with proposals still to review, so nothing in flight or
+        awaiting a decision loses its row. Passages and audit rows are untouched."""
+        with db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT id, thread_id FROM agent_runs WHERE story_id = ? AND status IN ('done', 'failed', 'cancelled')"
+                " AND NOT EXISTS (SELECT 1 FROM proposals WHERE run_id = agent_runs.id AND status = 'pending')", (story_id,)).fetchall()
+            conn.executemany("DELETE FROM agent_runs WHERE id = ?", [(r["id"],) for r in rows])
+        for r in rows:
+            self.live.pop(r["id"], None)
+            self.saver().delete_thread(r["thread_id"])
+        return len(rows)
 
     def _launch(self, run_id: int, workflow: str, thread_id: str, inp: Any) -> None:
         live = self.live.get(run_id)
@@ -133,6 +155,7 @@ class Manager:
         self._set_status(run_id, "running")
         graph = self.graph(workflow)
         handle = agents.RunHandle(emit=lambda e: self._push(live, e), cancel=live.cancel, progress=self.get(run_id)["progress"])
+        live.handle = handle
         cfg = {"configurable": {"thread_id": thread_id, "__run": handle}}
         live.thread = threading.Thread(target=self._execute, args=(live, graph, inp, cfg), daemon=True, name=f"run-{run_id}")
         live.thread.start()
@@ -156,7 +179,8 @@ class Manager:
             # for a run that wrote less than asked, so they land in `error` too
             errors = (graph.get_state(cfg).values or {}).get("errors") or []
             if errors:
-                error = "; ".join(errors)[:2000]
+                unique = list(dict.fromkeys(errors))  # a repeated problem is one line
+                error = (f"{len(errors)} problem{'s' if len(errors) != 1 else ''}:\n" + "\n".join(unique))[:2000]
         finally:
             self._set_status(live.id, status, error)
             self._push(live, {"type": "status", "status": status, "error": error})
@@ -168,15 +192,31 @@ class Manager:
         with live.lock:
             event = {**event, "seq": len(live.events) + 1, "at": time.time()}
             live.events.append(event)
+        body = {k: v for k, v in event.items() if k not in ("type", "seq", "at")}
         if event["type"] == "progress":
-            self._set_progress(live.id, {k: v for k, v in event.items() if k not in ("type", "seq", "at")})
+            self._set_progress(live.id, body)
+        else:
+            with db.transaction() as conn:
+                conn.execute("INSERT INTO run_events (run_id, seq, at, type, data) VALUES (?, ?, ?, ?, ?)",
+                             (live.id, event["seq"], event["at"], event["type"], json.dumps(body)))
 
     def events(self, run_id: int, after: int = 0) -> list[dict[str, Any]]:
         live = self.live.get(run_id)
-        if live is None:
-            return []
+        if live is None:  # after a restart: what was kept (progress events are not)
+            with db.transaction() as conn:
+                return [{"type": r["type"], "seq": r["seq"], "at": r["at"], **json.loads(r["data"])}
+                        for r in conn.execute("SELECT * FROM run_events WHERE run_id = ? AND seq > ? ORDER BY id", (run_id, after))]
         with live.lock:
             return live.events[after:]
+
+    def log(self, run_id: int, type: str | None = None) -> list[dict[str, Any]]:
+        """The run's saved events, oldest first (optionally one type), as the stream sent them."""
+        with db.transaction() as conn:
+            q, args = "SELECT seq, at, type, data FROM run_events WHERE run_id = ?", [run_id]
+            if type:
+                q, args = q + " AND type = ?", args + [type]
+            return [{"type": r["type"], "seq": r["seq"], "at": r["at"], **json.loads(r["data"])}
+                    for r in conn.execute(q + " ORDER BY seq", args)]
 
     def is_running(self, run_id: int) -> bool:
         live = self.live.get(run_id)

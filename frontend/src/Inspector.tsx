@@ -6,7 +6,8 @@ import { useState } from 'react'
 import { api, type Choice, type Passage, type Variable, type VariableKind } from './api'
 import { ConditionEditor, EffectsEditor } from './clauses'
 import { NumberField, TextArea, TextField } from './fields'
-import { AssistToolbar, AuditFlag, ProposalList, ProposalPanel } from './Proposals'
+import { AssistToolbar, ProposalList, ProposalPanel } from './Proposals'
+import { confirmDelete, confirmPrune } from './prune'
 import type { Selection } from './StoryCanvas'
 import type { StoryStore } from './useStory'
 
@@ -53,9 +54,7 @@ function PassagePanel({ passage: p, store, onSelect }: { passage: Passage; store
     store.reorderChoices(ids)
   }
   async function remove() {
-    if (inbound.length && !confirm(`${inbound.length} choice(s) lead here and will dangle. Delete anyway?`)) return
-    await store.deletePassage(p.id)
-    onSelect(null)
+    if (await confirmDelete(store, p.id)) onSelect(null)
   }
 
   return (
@@ -64,13 +63,16 @@ function PassagePanel({ passage: p, store, onSelect }: { passage: Passage; store
         <span className="kind">Passage {isStart && <span className="badge">start</span>}</span>
         <span className="spacer" />
         {!isStart && <button onClick={() => store.updateStory({ start_passage_id: p.id })}>Set as start</button>}
+        <button className="danger" disabled={!outgoing.length} onClick={() => confirmPrune(store, p.id)}
+          title="delete this passage's choices and every passage below them to the leaves (passages the start reaches another way are kept)">
+          Delete subtree
+        </button>
         <button className="danger" onClick={remove}>Delete</button>
       </div>
 
       <label>Title<TextField value={p.title} onSave={(title) => save({ title })} /></label>
       <label>Body<TextArea rows={10} value={p.body} onSave={(body) => save({ body })} /></label>
       <AssistToolbar passage={p} hasChoices={outgoing.length > 0} store={store} onSelect={onSelect} />
-      {p.meta.audit && <AuditFlag audit={p.meta.audit} />}
       <ProposalList proposals={proposals} onSelect={onSelect} />
 
       <details>
@@ -210,8 +212,8 @@ function StoryPanel({ store }: { store: StoryStore }) {
     <div className="panel">
       <div className="panel-head"><span className="kind">Story</span></div>
       <label>Title<TextField value={story.title} onSave={(title) => store.updateStory({ title })} /></label>
-      <label>Description<TextArea rows={4} value={story.description} onSave={(description) => store.updateStory({ description })} /></label>
       <p className="muted small">
+        Description and opening are edited as the premise, on the Lore tab.<br />
         {passages.length} passage{passages.length === 1 ? '' : 's'} · IFID <code>{story.ifid}</code>
         {' · '}
         <a href={api.tweeUrl(story.id)} download title="Twee 3 with SugarCube macros; Twine and Tweego import it">Export Twee</a>

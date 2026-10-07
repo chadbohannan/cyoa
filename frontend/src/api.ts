@@ -17,24 +17,9 @@ export interface StorySummary extends Story {
 
 export type Provenance = 'human' | 'agent'
 
-export interface AuditIssue {
-  severity: 'minor' | 'major'
-  problem: string
-  quote: string
-  evidence: string
-}
-
-export interface AuditMeta {
-  verdict: 'unresolved'
-  rounds: number
-  issues: AuditIssue[]
-}
-
 export interface PassageMeta {
   location?: string
   present?: string[]
-  events?: number[]
-  audit?: AuditMeta
   [key: string]: unknown
 }
 
@@ -85,15 +70,6 @@ export interface Lore {
   reviewed: boolean
 }
 
-export interface StoryEvent {
-  id: number
-  story_id: number
-  t: number
-  name: string
-  body: string
-  reviewed: boolean
-}
-
 // --- proposals (agent output; only Accept writes to the tables above) ---------
 
 export type ProposalKind = 'new_passage' | 'new_choice' | 'edit_passage' | 'edit_choice' | 'new_variable' | 'note'
@@ -123,7 +99,6 @@ export interface Proposal {
     kind?: VariableKind
     default?: unknown
     issues?: { claim: string; conflicts_with: string; severity: 'minor' | 'major' }[]
-    audit?: AuditMeta // new_choice, when refine gave up on the target but kept it (see agents.DEFAULT_REFINE)
   }
   status: 'pending' | 'accepted' | 'rejected'
   run_id: number | null
@@ -142,17 +117,12 @@ export interface AssistRequest {
 export type Workflow = 'canon_check' | 'expand_frontier'
 export type RunStatus = 'running' | 'paused' | 'done' | 'failed' | 'cancelled'
 
-// expand_frontier's draft/audit/revise loop (agents.DEFAULT_REFINE); rounds: 0 is the
-// pre-R1 no-op path.
+// expand_frontier's draft/audit/revise loop (agents.DEFAULT_REFINE): `rounds` is the most
+// revisions a passage gets; 0 skips the loop.
 export interface RefinePolicy {
   rounds?: number
-  restarts?: number
-  block?: 'minor' | 'major'
-  on_unresolved?: 'keep_flagged' | 'drop'
-  candidates?: number
   votes?: number
   audit_reasoning?: boolean
-  path_audit?: boolean
   auditors?: { passage?: string[]; choices?: string[] }
   audit_model?: string | null
 }
@@ -167,10 +137,11 @@ export interface RunProgress {
   level?: number
   created?: number
   frontier?: number
+  endings?: number // passages written as endings: terminal leaves
+  open?: number // passages written but not yet grown: non-terminal leaves
   checked?: number
   retries?: number
   rounds?: number
-  restarts?: number
 }
 
 // A story's pacing plan (models.PacingPlan; concepts/act-pacing.md). Depth is derived:
@@ -202,6 +173,23 @@ export interface RunCreate {
   steer?: string | null // over the plan's
   budget?: PacingPlan | Record<string, never> // empty: the story's saved plan
   policy?: RunPolicy // over the plan's
+}
+
+// One saved run event; a retry carries why the answer was refused and what it said.
+export interface RunLogEvent {
+  type: string
+  seq: number
+  at: number
+  passage_id?: number | null
+  phase?: string | null
+  attempt?: number
+  kind?: 'refused' | 'exception'
+  seconds?: number
+  reason?: string
+  answer?: string | null
+  schema?: string
+  model?: string
+  [k: string]: unknown
 }
 
 export interface AgentRun {
@@ -256,6 +244,55 @@ export interface WorkflowGraph {
   loop: { steps: LoopStep[]; edges: [string, string][] }
 }
 
+// --- interviews (Interview Me; see concepts/interview-me.md) ----------------------
+
+export type InterviewMode = 'answer' | 'skip' | 'decide'
+
+// One write an agent turn made: before null is a create, after null a delete.
+export interface InterviewWrite {
+  table: 'stories' | 'lore'
+  id: number
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  reverted: boolean
+}
+
+export interface InterviewEntry {
+  role: 'agent' | 'author'
+  text: string
+  mode: InterviewMode | null // author entries
+  writes: InterviewWrite[] // agent entries
+  opened: number[] // conflict ids this turn opened
+  resolved: number[] // conflict ids this turn resolved
+}
+
+// Two statements that cannot both hold; only the author's answer resolves one.
+export interface InterviewConflict {
+  id: number
+  about: string
+  a: string
+  b: string
+  source: 'model' | 'code'
+  status: 'open' | 'resolved'
+  resolution: string | null
+}
+
+export interface Interview {
+  id: number
+  story_id: number
+  status: 'open' | 'done'
+  transcript: InterviewEntry[]
+  conflicts: InterviewConflict[]
+  created_at: string
+  updated_at: string
+}
+
+export interface InterviewTurnRequest {
+  text?: string
+  mode?: InterviewMode
+  model?: string | null
+}
+
 // --- prompts (global roles; see prompts.py) ------------------------------------
 
 export interface PromptInfo {
@@ -285,7 +322,6 @@ export interface StoryGraph {
   choices: Choice[]
   variables: Variable[]
   lore: Lore[]
-  events: StoryEvent[]
   proposals: Proposal[] // pending only
 }
 
@@ -309,18 +345,25 @@ export interface Problems {
   merge_candidates: MergeCandidate[]
 }
 
-// Passages sharing story time, location and events: one scene reached by several routes.
+// Passages sharing story time and location: one scene reached by several routes.
 export interface MergeCandidate {
   t: number
   location: string
-  events: string[]
   passage_ids: number[]
 }
 
-// What pruning a passage deleted: its subtree (not the passage itself) and every choice out of either.
+// What pruning a passage deletes: every passage below it the start cannot reach another way
+// (not the passage itself) and every choice out of it or them.
 export interface PruneResult {
   passage_ids: number[]
   choice_ids: number[]
+}
+
+// Map positions written in one go: the map's auto layout, kept (POST .../layout).
+export interface PassagePosition {
+  id: number
+  pos_x: number
+  pos_y: number
 }
 
 export interface PromoteRequest {
@@ -348,7 +391,18 @@ export type PassageInput = Partial<Omit<Passage, Omitted>> & { title: string }
 export type ChoiceInput = Partial<Omit<Choice, Omitted>> & { from_passage: number; text: string }
 export type VariableInput = Omit<Variable, Omitted>
 export type LoreInput = Partial<Omit<Lore, Omitted>> & { kind: LoreKind; name: string }
-export type EventInput = Partial<Omit<StoryEvent, Omitted>> & { t: number; name: string }
+
+// Machine settings (models.SettingsInfo / SettingsPatch): the default model and the number of model calls in flight.
+export type SettingsInfo = {
+  saved: { model?: string; concurrency?: number }
+  model: string // in effect when a request names none
+  concurrency: number // the gate's size now
+  backend: string
+  url: string
+  env_model: string // what clearing the saved model falls back to
+  env_concurrency: number
+}
+export type SettingsPatch = { model?: string | null; concurrency?: number | null }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -388,17 +442,21 @@ export const api = {
   passages: {
     ...child<Passage, PassageInput>('passages'),
     duplicate: (storyId: number, id: number) => post<Passage>(`/stories/${storyId}/passages/${id}/duplicate`),
-    // delete the passage's choices and its subtree, leaving it a frontier
+    // delete the passage's choices and everything below them to the leaves, leaving it a frontier
     prune: (storyId: number, id: number) => post<PruneResult>(`/stories/${storyId}/passages/${id}/prune`),
+    // what prune would delete; changes nothing
+    prunePreview: (storyId: number, id: number) => request<PruneResult>(`/stories/${storyId}/passages/${id}/prune`),
     // fold `passageIds` into `into`: inbound choices retargeted, outgoing moved, the others deleted
     merge: (storyId: number, into: number, passageIds: number[]) =>
       post<Passage>(`/stories/${storyId}/passages/merge`, { into, passage_ids: passageIds }),
   },
+  // returns the ids it moved; ids from another story or already deleted are skipped
+  layout: (storyId: number, positions: PassagePosition[]) =>
+    post<{ passage_ids: number[] }>(`/stories/${storyId}/layout`, { positions }),
   promote: (storyId: number, body: PromoteRequest) => post<{ passage_ids: number[] }>(`/stories/${storyId}/promote`, body),
   choices: child<Choice, ChoiceInput>('choices'),
   variables: child<Variable, VariableInput>('variables'),
   lore: child<Lore, LoreInput>('lore'),
-  events: child<StoryEvent, EventInput>('events'),
 
   problems: (storyId: number) => request<Problems>(`/stories/${storyId}/problems`),
   playtest: (storyId: number, body: { runs?: number; max_steps?: number; seed?: number | null }) =>
@@ -422,6 +480,9 @@ export const api = {
   runs: {
     list: (storyId: number) => request<AgentRun[]>(`/stories/${storyId}/runs`),
     start: (storyId: number, body: RunCreate) => post<AgentRun>(`/stories/${storyId}/runs`, body),
+    log: (storyId: number, id: number, type?: string) =>
+      request<RunLogEvent[]>(`/stories/${storyId}/runs/${id}/log${type ? `?type=${type}` : ''}`),
+    clear: (storyId: number) => request<{ cleared: number }>(`/stories/${storyId}/runs`, { method: 'DELETE' }),
     get: (storyId: number, id: number) => request<AgentRun>(`/stories/${storyId}/runs/${id}`),
     resume: (storyId: number, id: number, body: { steer?: string | null; stop?: boolean }) =>
       post<AgentRun>(`/stories/${storyId}/runs/${id}/resume`, body),
@@ -429,6 +490,16 @@ export const api = {
     state: (storyId: number, id: number) => request<RunState>(`/stories/${storyId}/runs/${id}/state`),
     // The event stream is SSE; the caller owns the EventSource.
     events: (storyId: number, id: number, after = 0) => new EventSource(`/api/stories/${storyId}/runs/${id}/events?after=${after}`),
+  },
+  interviews: {
+    list: (storyId: number) => request<Interview[]>(`/stories/${storyId}/interviews`),
+    start: (storyId: number, body: { model?: string | null } = {}) => post<Interview>(`/stories/${storyId}/interviews`, body),
+    get: (storyId: number, id: number) => request<Interview>(`/stories/${storyId}/interviews/${id}`),
+    turn: (storyId: number, id: number, body: InterviewTurnRequest) =>
+      post<Interview>(`/stories/${storyId}/interviews/${id}/turn`, body),
+    revert: (storyId: number, id: number, body: { entry: number; write?: number | null }) =>
+      post<Interview>(`/stories/${storyId}/interviews/${id}/revert`, body),
+    close: (storyId: number, id: number) => post<Interview>(`/stories/${storyId}/interviews/${id}/close`),
   },
   workflows: () => request<Record<string, WorkflowGraph>>('/agents/workflows'),
   pacing: {
@@ -448,4 +519,9 @@ export const api = {
   },
 
   llmModels: () => request<string[]>('/llm/models'),
+
+  settings: {
+    get: () => request<SettingsInfo>('/settings'),
+    save: (body: SettingsPatch) => request<SettingsInfo>('/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  },
 }

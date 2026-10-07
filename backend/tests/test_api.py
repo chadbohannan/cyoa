@@ -110,7 +110,7 @@ def test_choice_patch_validates_target(client):
     assert c.delete(f"/api/stories/{sid}/choices/{ch['id']}").status_code == 404
 
 
-def test_variables_lore_events(client):
+def test_variables_lore(client):
     c = client
     s = c.post("/api/stories", json={"title": "A"}).json()
     sid = s["id"]
@@ -123,14 +123,12 @@ def test_variables_lore_events(client):
     assert v["default"] is None
 
     lore = c.post(f"/api/stories/{sid}/lore", json={"kind": "character", "name": "Ada", "body": "engineer"}).json()
-    ev = c.post(f"/api/stories/{sid}/events", json={"t": 2, "name": "Flood"}).json()
-    c.post(f"/api/stories/{sid}/events", json={"t": 1, "name": "Dawn"})
     c.patch(f"/api/stories/{sid}/lore/{lore['id']}", json={"reviewed": True})
 
     g = c.get(f"/api/stories/{sid}/graph").json()
     assert g["lore"][0]["name"] == "Ada" and g["lore"][0]["reviewed"] is True
-    assert [e["name"] for e in g["events"]] == ["Dawn", "Flood"]
-    assert c.delete(f"/api/stories/{sid}/events/{ev['id']}").status_code == 204
+    assert "events" not in g
+    assert c.post(f"/api/stories/{sid}/events", json={"t": 1, "name": "Dawn"}).status_code in (404, 405)
     assert c.delete(f"/api/stories/{sid}/lore/{lore['id']}").status_code == 204
     assert c.get(f"/api/stories/{sid}/graph").json()["lore"] == []
 
@@ -236,6 +234,25 @@ def test_promote_subtree_and_explicit(client):
     assert not any(p["reviewed"] for p in c.get(f"{base}/graph").json()["passages"])
 
 
+def test_layout_writes_positions_in_bulk(client):
+    c = client
+    s = c.post("/api/stories", json={"title": "Layout"}).json()
+    sid, start = s["id"], s["start_passage_id"]
+    base = f"/api/stories/{sid}"
+    o = c.post("/api/stories", json={"title": "Other"}).json()
+    other = o["start_passage_id"]
+    (a,) = _chain(c, base, start, ["A"])
+    r = c.post(f"{base}/layout", json={"positions": [
+        {"id": start, "pos_x": 10, "pos_y": 20}, {"id": a, "pos_x": -5.5, "pos_y": 200},
+        {"id": other, "pos_x": 1, "pos_y": 1}, {"id": 9999, "pos_x": 1, "pos_y": 1}]}).json()
+    assert r == {"passage_ids": sorted([start, a])}
+    pos = {p["id"]: (p["pos_x"], p["pos_y"]) for p in c.get(f"{base}/graph").json()["passages"]}
+    assert pos == {start: (10, 20), a: (-5.5, 200)}
+    theirs = c.get(f"/api/stories/{o['id']}/graph").json()["passages"]
+    assert [(p["pos_x"], p["pos_y"]) for p in theirs] == [(0, 0)]  # another story's passage is left alone
+    assert c.post("/api/stories/9999/layout", json={"positions": []}).status_code == 404
+
+
 def test_prune_deletes_choices_and_subtree(client):
     c = client
     s = c.post("/api/stories", json={"title": "Prune"}).json()
@@ -259,14 +276,36 @@ def test_prune_deletes_choices_and_subtree(client):
     assert c.post(f"{base}/passages/9999/prune").status_code == 404
 
 
+def test_prune_runs_to_the_leaves_past_orphans(client):
+    """An orphan elsewhere that links into the branch must not shield it (the
+    old collapse rule did), and a passage the start reaches another way stays."""
+    c = client
+    s = c.post("/api/stories", json={"title": "Prune deep"}).json()
+    sid, start = s["id"], s["start_passage_id"]
+    base = f"/api/stories/{sid}"
+    a = _chain(c, base, start, ["A1", "A2", "A3", "A4"])
+    b = _chain(c, base, start, ["B1"])
+    orphan = c.post(f"{base}/passages", json={"title": "Orphan"}).json()["id"]
+    c.post(f"{base}/choices", json={"from_passage": orphan, "to_passage": a[2], "text": "in"})
+    c.post(f"{base}/choices", json={"from_passage": a[1], "to_passage": b[0], "text": "rejoin"})
+
+    preview = c.get(f"{base}/passages/{a[0]}/prune").json()
+    assert preview["passage_ids"] == sorted(a[1:])
+    assert len(c.get(f"{base}/graph").json()["passages"]) == 7  # the preview deletes nothing
+    assert c.post(f"{base}/passages/{a[0]}/prune").json() == preview
+    left = {p["id"] for p in c.get(f"{base}/graph").json()["passages"]}
+    assert left == {start, a[0], b[0], orphan}
+    assert c.get(f"{base}/passages/9999/prune").status_code == 404
+
+
 def test_merge_candidates_and_merge(client):
     c = client
     s = c.post("/api/stories", json={"title": "Dup"}).json()
     sid, start = s["id"], s["start_passage_id"]
     base = f"/api/stories/{sid}"
-    scene = {"t": 3, "meta": {"location": "The Pit", "events": [1]}}
+    scene = {"t": 3, "meta": {"location": "The Pit"}}
     a = c.post(f"{base}/passages", json={"title": "Pit A", **scene}).json()
-    b = c.post(f"{base}/passages", json={"title": "Pit B", "t": 3, "meta": {"location": "the pit ", "events": [1]}}).json()
+    b = c.post(f"{base}/passages", json={"title": "Pit B", "t": 3, "meta": {"location": "the pit "}}).json()
     other = c.post(f"{base}/passages", json={"title": "Elsewhere", "t": 3, "meta": {"location": "Hall"}}).json()
     c.post(f"{base}/choices", json={"from_passage": start, "to_passage": a["id"], "text": "left"})
     c.post(f"{base}/choices", json={"from_passage": start, "to_passage": b["id"], "text": "right"})
@@ -274,7 +313,7 @@ def test_merge_candidates_and_merge(client):
     c.post(f"{base}/choices", json={"from_passage": b["id"], "to_passage": a["id"], "text": "loop"})
 
     p = c.get(f"{base}/problems").json()
-    assert p["merge_candidates"] == [{"t": 3, "location": "the pit", "events": ["1"], "passage_ids": sorted([a["id"], b["id"]])}]
+    assert p["merge_candidates"] == [{"t": 3, "location": "the pit", "passage_ids": sorted([a["id"], b["id"]])}]
 
     assert c.post(f"{base}/passages/merge", json={"into": a["id"], "passage_ids": [a["id"]]}).status_code == 422
     assert c.post(f"{base}/passages/merge", json={"into": a["id"], "passage_ids": [9999]}).status_code == 404
@@ -297,6 +336,9 @@ def test_playtest_and_twee_export(client):
     c.post(f"{base}/variables", json={"name": "brave", "kind": "flag", "default": False})
     pit = c.post(f"{base}/passages", json={"title": "Pit", "body": "Dark.", "reviewed": True, "pos_x": 10.5, "pos_y": 20}).json()
     pit2 = c.post(f"{base}/passages", json={"title": "Pit", "provenance": "agent"}).json()
+    assert pit2["title"] == "Pit (2)"  # creation keeps names unique
+    with db.transaction() as conn:  # data from before that rule: the export still de-duplicates
+        conn.execute("UPDATE passages SET title = 'Pit' WHERE id = ?", (pit2["id"],))
     gated = c.post(f"{base}/passages", json={"title": "Sky"}).json()
     c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Jump", "effects": {"set": {"brave": True}}})
     c.post(f"{base}/choices", json={"from_passage": start, "to_passage": gated["id"], "text": "Fly",
@@ -326,3 +368,50 @@ def test_playtest_and_twee_export(client):
 
     c.patch(f"{base}", json={"start_passage_id": None})
     assert c.post(f"{base}/playtest", json={}).status_code == 409
+
+
+def test_passage_titles_are_unique(client):
+    s = client.post("/api/stories", json={"title": "Cave"}).json()
+    base = f"/api/stories/{s['id']}"
+    a = client.post(f"{base}/passages", json={"title": "New passage"}).json()
+    b = client.post(f"{base}/passages", json={"title": "new passage"}).json()  # case-insensitive
+    c3 = client.post(f"{base}/passages", json={"title": "New passage"}).json()
+    assert [a["title"], b["title"], c3["title"]] == ["New passage", "new passage (2)", "New passage (3)"]
+    # a rename to a taken name is refused; keeping its own name, or another case of it, is fine
+    assert client.patch(f"{base}/passages/{b['id']}", json={"title": "NEW PASSAGE"}).status_code == 409
+    assert client.patch(f"{base}/passages/{b['id']}", json={"title": "new passage (2)"}).status_code == 200
+    assert client.patch(f"{base}/passages/{a['id']}", json={"title": "NEW passage"}).status_code == 200
+    dup = client.post(f"{base}/passages/{a['id']}/duplicate").json()
+    assert dup["title"] == "NEW passage (copy)"
+
+
+def test_settings_model_and_concurrency(client, monkeypatch):
+    from cyoa import agents, llm
+    monkeypatch.setattr(agents, "_GATE", agents.Gate(1))
+    info = client.get("/api/settings").json()
+    assert info["saved"] == {} and info["concurrency"] == 1 and info["model"] == info["env_model"] == llm.DEFAULT_MODEL
+    # saving applies at once: the gate resizes, and a call that names no model gets the saved one
+    r = client.put("/api/settings", json={"model": "salad-chat", "concurrency": 4})
+    assert r.status_code == 200 and r.json()["saved"] == {"model": "salad-chat", "concurrency": 4}
+    assert agents._GATE.limit == 4 and r.json()["model"] == "salad-chat"
+    assert llm.chat_model().model_name == "salad-chat" if llm.BACKEND == "openai" else True
+    assert llm.chat_model("explicit").model_name == "explicit" if llm.BACKEND == "openai" else True
+    # a field left out is unchanged; null clears one and falls back to the launch configuration
+    assert client.put("/api/settings", json={"concurrency": 2}).json()["saved"] == {"model": "salad-chat", "concurrency": 2}
+    cleared = client.put("/api/settings", json={"model": None, "concurrency": None}).json()
+    assert cleared["saved"] == {} and cleared["model"] == llm.DEFAULT_MODEL and cleared["concurrency"] == agents.ENV_CONCURRENCY
+    assert client.put("/api/settings", json={"concurrency": 0}).status_code == 422
+    assert client.put("/api/settings", json={"colour": "red"}).status_code == 422
+    assert client.put("/api/settings", json={"model": "  "}).json()["saved"] == {}
+
+
+def test_gate_resizes_while_calls_wait():
+    from cyoa import agents
+    gate = agents.Gate(1)
+    assert gate.acquire(0.1) and not gate.acquire(0.05)  # full: a second call waits, and times out
+    gate.resize(2)
+    assert gate.acquire(0.1)  # raised: it gets through
+    gate.resize(1)  # lowered below the two in flight: nothing is cut, new calls hold
+    assert not gate.acquire(0.05)
+    gate.release(); gate.release()
+    assert gate.acquire(0.1)

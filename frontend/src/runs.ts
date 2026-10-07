@@ -22,10 +22,10 @@ export function describeProgress(run: AgentRun, passageCount = 0): string {
   if (run.workflow === 'canon_check') return `${p.checked ?? 0}/${run.scope.length || passageCount || 'all'} checked`
   const b: RunBudget = run.budget
   const level = p.level ?? 0
-  let s = `${p.created ?? 0} passages · level ${level + 1}/${b.depth ?? '?'}`
-  if (b.acts) s += ` · ${stageName({ acts: b.acts }, level)}`
+  let s = `${p.created ?? 0} passages written · now at level ${level + 1} of ${b.depth ?? '?'}`
+  if (b.acts) s += ` (${stageName({ acts: b.acts }, level)})`
+  if (p.endings !== undefined) s += ` · ${p.endings} ending${p.endings === 1 ? '' : 's'}, ${p.open ?? 0} still open`
   if (p.retries) s += ` · ${p.retries} retr${p.retries === 1 ? 'y' : 'ies'}`
-  if (p.rounds) s += ` · ${p.rounds} audit round${p.rounds === 1 ? '' : 's'}`
-  if (p.restarts) s += ` · ${p.restarts} restart${p.restarts === 1 ? '' : 's'}`
+  if (p.rounds) s += ` · ${p.rounds} audit${p.rounds === 1 ? '' : 's'} run`
   return s
 }

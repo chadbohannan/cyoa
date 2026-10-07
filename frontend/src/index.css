@@ -14,8 +14,8 @@ html, body, #root { margin: 0; height: 100%; }
 button { cursor: pointer; font: inherit; padding: 0.3rem 0.6rem; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: inherit; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
-button.link { border: none; background: none; padding: 0; color: var(--accent); }
-button.link:hover { text-decoration: underline; }
+a.link, button.link { border: none; background: none; padding: 0; color: var(--accent); text-decoration: none; }
+a.link:hover, button.link:hover { text-decoration: underline; }
 button.icon { padding: 0.1rem 0.4rem; }
 button.danger { color: var(--danger); }
 button.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
@@ -71,6 +71,8 @@ table.vars td { padding: 0.15rem 0.15rem; }
 details > summary { cursor: pointer; color: var(--muted); margin: 0.5rem 0; }
 
 /* passage cards on the map */
+/* auto layout: cards cannot be dragged, so they can glide to where the layout puts them */
+.canvas.auto-layout .react-flow__node { transition: transform 250ms ease; }
 .passage-card { width: 180px; padding: 0.5rem 0.6rem; border: 1px solid #8888; border-radius: 6px; background: Canvas; color: CanvasText; font-size: 12px; }
 .passage-card.start { border-color: var(--accent); border-width: 2px; }
 .passage-card.selected { box-shadow: 0 0 0 2px var(--accent); }
@@ -83,12 +85,44 @@ details > summary { cursor: pointer; color: var(--muted); margin: 0.5rem 0; }
 .context-menu button:hover:not(:disabled) { background: var(--panel); }
 
 /* lore */
-.lore { max-width: 70rem; margin: 0 auto; padding: 1rem 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; height: 100%; overflow-y: auto; }
+.lore { max-width: 70rem; margin: 0 auto; padding: 1rem 1.5rem; display: grid; grid-template-columns: 1fr; gap: 2rem; height: 100%; overflow-y: auto; }
 .lore h2 { margin: 0.5rem 0 0; }
 .lore h3 { margin: 1rem 0 0.25rem; text-transform: capitalize; color: var(--muted); font-size: 0.9em; }
 .lore .row input { width: auto; }
 .lore .row input.grow { flex: 1; }
-@media (max-width: 800px) { .lore { grid-template-columns: 1fr; } }
+.lore { align-content: start; }
+.lore .premise { grid-column: 1 / -1; }
+.premise-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+@media (max-width: 800px) { .lore, .premise-cols { grid-template-columns: 1fr; } }
+
+/* Interview Me: a panel docked beside the Lore view; rows the last turn wrote flash once */
+.lore-shell { display: flex; height: 100%; min-height: 0; }
+.lore-shell > .lore { flex: 1; min-width: 0; }
+.premise > .row h2 { margin-bottom: 0; }
+.interview { width: 26rem; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--line); min-height: 0; }
+.interview-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--line); }
+.interview-log { flex: 1; overflow-y: auto; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.interview-empty p { margin: 0 0 0.6rem; }
+.bubble { border: 1px solid var(--line); border-radius: 8px; padding: 0.45rem 0.6rem; max-width: 92%; white-space: pre-wrap; }
+.bubble.agent { align-self: flex-start; background: var(--panel); }
+.bubble.author { align-self: flex-end; background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bubble.pending { font-style: italic; }
+.bubble details > summary { margin: 0.35rem 0 0; font-size: 0.85em; }
+.interview-marks { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.3rem; }
+.interview-marks .badge { margin-left: 0; text-transform: none; letter-spacing: 0; }
+.badge.warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
+.interview-write { border-top: 1px solid var(--line); margin-top: 0.35rem; padding-top: 0.35rem; font-size: 0.85em; }
+.interview-write .grow { flex: 1; font-weight: 600; }
+.interview-write.reverted { opacity: 0.55; }
+.diff-before { color: var(--muted); text-decoration: line-through; margin-top: 0.2rem; }
+.diff-after { margin-top: 0.2rem; }
+.interview-error { padding: 0 0.75rem 0.4rem; }
+.interview-foot { border-top: 1px solid var(--line); padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.interview-conflicts { max-height: 12rem; overflow-y: auto; }
+.interview-conflict { border-left: 3px solid var(--danger); padding: 0.2rem 0.5rem; margin: 0.3rem 0; }
+.touched { animation: touched 2.5s ease-out; }
+@keyframes touched { from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 60%, transparent); border-color: var(--accent); } to { box-shadow: 0 0 0 3px transparent; } }
+@media (max-width: 800px) { .lore-shell { flex-direction: column; } .interview { width: auto; border-left: none; border-top: 1px solid var(--line); max-height: 60%; } }
 
 /* map tools & problems overlay */
 .canvas-tools { position: absolute; z-index: 5; top: 0.5rem; left: 0.5rem; display: flex; align-items: center; gap: 0.5rem; background: Canvas; border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.4rem; }
@@ -135,9 +169,7 @@ button.primary { border-color: var(--accent); background: color-mix(in srgb, var
 select.model { width: auto; max-width: 16rem; }
 .issues { list-style: none; padding: 0; margin: 0.25rem 0; }
 .issues li { padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
-.badge.major, .badge.unresolved { color: var(--danger); border-color: var(--danger); }
-.audit-flag summary { cursor: pointer; color: var(--danger); }
-.audit-flag { margin: 0.4rem 0; }
+.badge.major { color: var(--danger); border-color: var(--danger); }
 
 /* runs: activity on the map, the dock, and the Agents view */
 .map-column { display: flex; flex-direction: column; flex: 1; min-width: 0; }

@@ -38,9 +38,9 @@ JSON_COLS: dict[str, set[str]] = {
     "choices": {"condition", "effects"},
     "variables": {"default"},
     "lore": set(),
-    "events": set(),
     "proposals": {"payload"},
     "agent_runs": {"params", "scope", "budget", "policy", "progress"},
+    "interviews": {"transcript", "conflicts"},
 }
 
 OPS = {
@@ -171,6 +171,25 @@ def _outgoing(choices: Iterable[dict[str, Any]]) -> dict[int, list[dict[str, Any
     return out
 
 
+def depth_from_start(root: int, start_passage_id: int | None, choices: Iterable[dict[str, Any]]) -> int:
+    """Shortest number of choices from the start to `root`; 0 for the start itself, and for
+    a root the start cannot reach (or a story with no start), which is treated as a fresh top."""
+    if root == start_passage_id or start_passage_id is None:
+        return 0
+    out = _outgoing(list(choices))
+    seen, queue = {start_passage_id}, deque([(start_passage_id, 0)])
+    while queue:
+        pid, d = queue.popleft()
+        for c in out.get(pid, []):
+            to = c["to_passage"]
+            if to == root:
+                return d + 1
+            if to is not None and to not in seen:
+                seen.add(to)
+                queue.append((to, d + 1))
+    return 0
+
+
 def subtree(root: int, start_passage_id: int | None, passages: Iterable[dict[str, Any]], choices: Iterable[dict[str, Any]]) -> list[int]:
     """The root plus every passage reachable from it *only* through it.
 
@@ -208,21 +227,57 @@ def subtree(root: int, start_passage_id: int | None, passages: Iterable[dict[str
     return mine
 
 
+def prune_set(root: int, start_passage_id: int | None, passages: Iterable[dict[str, Any]], choices: Iterable[dict[str, Any]]) -> list[int]:
+    """The passages deleting `root`'s subtree removes: everything reachable from
+    the root (not the root itself) that the start cannot reach without passing
+    through it, so pruning runs to the leaves and leaves no orphans behind.
+
+    Unlike `subtree`, orphans elsewhere on the map do not shield anything: a
+    passage nothing links to is already cut off, so what only it reaches would be
+    orphaned too. Passages another branch from the start reaches survive.
+    """
+    passages, choices = list(passages), list(choices)
+    out = _outgoing(choices)
+    ids = {p["id"] for p in passages}
+    if root not in ids:
+        return []
+    kept: set[int] = set()
+    queue = deque([start_passage_id] if start_passage_id in ids and start_passage_id != root else [])
+    while queue:
+        pid = queue.popleft()
+        if pid in kept or pid == root:
+            continue
+        kept.add(pid)
+        queue.extend(c["to_passage"] for c in out.get(pid, []) if c["to_passage"] is not None)
+    doomed: list[int] = []
+    seen = {root}
+    queue = deque([root])
+    while queue:
+        for c in out.get(queue.popleft(), []):
+            nxt = c["to_passage"]
+            if nxt is None or nxt in seen or nxt not in ids:
+                continue
+            seen.add(nxt)
+            if nxt in kept:
+                continue
+            doomed.append(nxt)
+            queue.append(nxt)
+    return doomed
+
+
 def merge_candidates(passages: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Groups of passages sharing story time, location and events: the same scene
-    reached by different routes, and so the natural things to merge."""
+    """Groups of passages sharing story time and location: the same scene reached
+    by different routes, and so the natural things to merge."""
     groups: dict[tuple[Any, ...], list[int]] = {}
     for p in passages:
         meta = p.get("meta") or {}
         location = meta.get("location") if isinstance(meta, dict) else None
         if p.get("t") is None or not location:
             continue
-        events = meta.get("events") if isinstance(meta.get("events"), list) else []
-        key = (p["t"], str(location).strip().lower(), tuple(sorted(str(e) for e in events)))
-        groups.setdefault(key, []).append(p["id"])
+        groups.setdefault((p["t"], str(location).strip().lower()), []).append(p["id"])
     return [
-        {"t": t, "location": location, "events": list(events), "passage_ids": sorted(ids)}
-        for (t, location, events), ids in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1]))
+        {"t": t, "location": location, "passage_ids": sorted(ids)}
+        for (t, location), ids in sorted(groups.items())
         if len(ids) > 1
     ]
 
@@ -335,6 +390,8 @@ def insert_row(conn: sqlite3.Connection, table: str, story_id: int, values: dict
     if row is None:
         raise HTTPException(404, "story not found")
 
+    if table == "passages" and values.get("title"):
+        values = {**values, "title": db.unique_title(conn, story_id, values["title"])}  # section names are Twee's keys
     values = encode_values(table, {"story_id": story_id, **values})
     cols = ", ".join(f'"{k}"' for k in values)
     marks = ", ".join("?" for _ in values)

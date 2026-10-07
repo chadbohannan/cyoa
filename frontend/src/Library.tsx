@@ -34,6 +34,7 @@ export function Library({ onOpen }: { onOpen: (id: number) => void }) {
       <div className="row">
         <h1>Stories</h1>
         <span className="spacer" />
+        <a className="link" href="#/settings" title="model and concurrency">Settings</a>
         <button onClick={create}>New story</button>
       </div>
       {error && <p className="error">{error}</p>}

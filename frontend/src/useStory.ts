@@ -8,14 +8,13 @@ import {
   type Choice,
   type AssistRequest,
   type ChoiceInput,
-  type EventInput,
   type Lore,
   type LoreInput,
   type Passage,
   type PassageInput,
+  type PassagePosition,
   type PromoteRequest,
   type Story,
-  type StoryEvent,
   type StoryGraph,
   type Variable,
   type VariableInput,
@@ -23,7 +22,6 @@ import {
 import { guardWith } from './store'
 import { useRuns } from './useRuns'
 
-const MODEL_KEY = 'cyoa.model'
 
 type Row = { id: number }
 const upsert = <T extends Row>(rows: T[], row: T) =>
@@ -97,6 +95,16 @@ export function useStory(storyId: number) {
     patchGraph((g) => ({ ...g, passages: g.passages.map((p) => (flipped.has(p.id) ? { ...p, reviewed: body.reviewed ?? true } : p)) }))
     return passage_ids
   })
+  const saveLayout = guard(async (positions: PassagePosition[]) => {
+    const { passage_ids } = await api.layout(storyId, positions)
+    const moved = new Set(passage_ids)
+    const at = new Map(positions.map((q) => [q.id, q]))
+    patchGraph((g) => ({
+      ...g,
+      passages: g.passages.map((p) => (moved.has(p.id) ? { ...p, pos_x: at.get(p.id)!.pos_x, pos_y: at.get(p.id)!.pos_y } : p)),
+    }))
+    return passage_ids
+  })
   const mergePassages = guard(async (into: number, ids: number[]) => {
     const p = await api.passages.merge(storyId, into, ids)
     reload() // choices were retargeted and moved server-side
@@ -153,42 +161,16 @@ export function useStory(storyId: number) {
     patchGraph((g) => ({ ...g, lore: without(g.lore, id) }))
   })
 
-  const createEvent = guard(async (body: EventInput) => {
-    const e = await api.events.create(storyId, body)
-    patchGraph((g) => ({ ...g, events: upsert(g.events, e) }))
-    return e
-  })
-  const updateEvent = guard(async (id: number, body: Partial<EventInput>) => {
-    const e = await api.events.update(storyId, id, body)
-    patchGraph((g) => ({ ...g, events: upsert(g.events, e) }))
-    return e
-  })
-  const deleteEvent = guard(async (id: number) => {
-    await api.events.remove(storyId, id)
-    patchGraph((g) => ({ ...g, events: without(g.events, id) }))
-  })
-
   // --- assist ---------------------------------------------------------------
-  // The chosen model is per browser, not per story. `busy` maps passage id to the
-  // verb in flight against it, so a request against one passage doesn't disable
-  // another's toolbar — the backend (its own concurrency gate, tuned per model
-  // server via CYOA_AGENT_CONCURRENCY) decides whether requests queue or run
-  // concurrently; the frontend just reflects what it actually sent.
-  const [model, setModelState] = useState<string | null>(() => {
-    try { return localStorage.getItem(MODEL_KEY) } catch { return null }
-  })
-  const setModel = (m: string | null) => {
-    setModelState(m)
-    try {
-      if (m) localStorage.setItem(MODEL_KEY, m)
-      else localStorage.removeItem(MODEL_KEY)
-    } catch { /* private mode */ }
-  }
+  // `busy` maps passage id to the verb in flight against it, so a request against one passage
+  // doesn't disable another's toolbar — the backend (its own concurrency gate, set on the Settings
+  // screen) decides whether requests queue or run concurrently; the frontend just reflects what
+  // it actually sent. The model is the backend's setting too, not sent from here.
   const [busy, setBusy] = useState<Record<number, string>>({})
-  const assist = guard(async (passageId: number, req: Omit<AssistRequest, 'model'>) => {
+  const assist = guard(async (passageId: number, req: AssistRequest) => {
     setBusy((b) => ({ ...b, [passageId]: req.verb }))
     try {
-      const rows = await api.assist(storyId, passageId, { ...req, model })
+      const rows = await api.assist(storyId, passageId, req)
       if (rows.length > 0) {
         // Proposals were created; patch them in locally
         patchGraph((g) => ({ ...g, proposals: rows.reduce(upsert, g.proposals) }))
@@ -217,15 +199,13 @@ export function useStory(storyId: number) {
   })
 
   // --- runs (useRuns.ts) ---------------------------------------------------
-  const runs = useRuns(storyId, { reload, model, setError })
+  const runs = useRuns(storyId, { reload, setError })
 
   return {
     storyId,
     graph,
     error,
     reload,
-    model,
-    setModel,
     busy,
     assist,
     ...runs,
@@ -239,6 +219,7 @@ export function useStory(storyId: number) {
     duplicatePassage,
     prunePassage,
     promote,
+    saveLayout,
     mergePassages,
     createChoice,
     updateChoice,
@@ -250,11 +231,8 @@ export function useStory(storyId: number) {
     createLore,
     updateLore,
     deleteLore,
-    createEvent,
-    updateEvent,
-    deleteEvent,
   }
 }
 
 export type StoryStore = ReturnType<typeof useStory>
-export type { Choice, Lore, Passage, StoryEvent, Variable }
+export type { Choice, Lore, Passage, Variable }

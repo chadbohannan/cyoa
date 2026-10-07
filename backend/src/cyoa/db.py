@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS passages (
     -- editor layout hint; the graph editor owns these, the engine ignores them
     pos_x      REAL NOT NULL DEFAULT 0,
     pos_y      REAL NOT NULL DEFAULT 0,
-    -- world layer: story-time clock and {"location", "present": [...], "events": [ids]}
+    -- world layer: story-time clock and {"location", "present": [...]}
     t          REAL,
     meta       TEXT NOT NULL DEFAULT '{}',
     -- agents write directly where reviewed = 0 and must propose where reviewed = 1
@@ -78,16 +78,6 @@ CREATE TABLE IF NOT EXISTS lore (
     id       INTEGER PRIMARY KEY,
     story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
     kind     TEXT NOT NULL CHECK (kind IN ('character', 'place', 'faction', 'rule')),
-    name     TEXT NOT NULL,
-    body     TEXT NOT NULL DEFAULT '',
-    reviewed INTEGER NOT NULL DEFAULT 0
-);
-
--- the world timeline: what happens at each t on every branch
-CREATE TABLE IF NOT EXISTS events (
-    id       INTEGER PRIMARY KEY,
-    story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-    t        REAL NOT NULL,
     name     TEXT NOT NULL,
     body     TEXT NOT NULL DEFAULT '',
     reviewed INTEGER NOT NULL DEFAULT 0
@@ -134,6 +124,17 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- a run's event log, kept so retries and failures can be read after the fact; goes with the run
+CREATE TABLE IF NOT EXISTS run_events (
+    id     INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    seq    INTEGER NOT NULL,   -- position in the run's log within one server process
+    at     REAL NOT NULL,      -- unix time
+    type   TEXT NOT NULL,      -- node | activity | retry | interrupt | status (progress is not kept: the run row has it)
+    data   TEXT NOT NULL DEFAULT '{}'  -- JSON: the event minus type, seq and at
+);
+CREATE INDEX IF NOT EXISTS run_events_run ON run_events(run_id, id);
+
 -- a story's pacing plan (concepts/act-pacing.md; shape in models.PacingPlan). A row
 -- only once the author saves one; until then the story uses agents.DEFAULT_PLAN. Its
 -- own table rather than a stories column so an existing cyoa.db picks it up.
@@ -141,6 +142,33 @@ CREATE TABLE IF NOT EXISTS pacing (
     story_id INTEGER PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
     plan     TEXT NOT NULL
 );
+
+-- an Interview Me conversation (concepts/interview-me.md): the agent asks, the author
+-- answers, and each agent entry in `transcript` carries the premise/character writes it
+-- made ({table, id, before, after}) so they can be reverted. `conflicts` are the
+-- contradictions found along the way; only the author's answer resolves one.
+CREATE TABLE IF NOT EXISTS interviews (
+    id         INTEGER PRIMARY KEY,
+    story_id   INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
+    transcript TEXT NOT NULL DEFAULT '[]',
+    conflicts  TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- what a run did, kept past a restart: node, activity, retry (with the reason), interrupt and status
+-- events as the run pushed them. Progress is not here (the run row keeps the latest). Cascades with the run,
+-- so Clear history takes it along.
+CREATE TABLE IF NOT EXISTS run_events (
+    id     INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    seq    INTEGER NOT NULL,
+    at     REAL NOT NULL,
+    type   TEXT NOT NULL,
+    data   TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS run_events_run ON run_events(run_id, seq);
 
 -- refinement telemetry: one row per (step, round, auditor). Append-only; cascades
 -- with the story, and with the specific passage/proposal it audited.
@@ -188,6 +216,24 @@ def transaction(path: Path | None = None) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+def unique_title(conn: sqlite3.Connection, story_id: int, title: str, exclude_id: int | None = None) -> str:
+    """`title` if no other passage of the story has it (case-insensitively, since Twine names
+    are the export's keys), else 'title (2)', 'title (3)', ... — the first free one."""
+    title = (title or "").strip()
+    taken = {r[0].strip().casefold() for r in conn.execute(
+        "SELECT title FROM passages WHERE story_id = ? AND id IS NOT ?", (story_id, exclude_id))}
+    if title.casefold() not in taken:
+        return title
+    n = 2
+    while f"{title} ({n})".casefold() in taken:
+        n += 1
+    return f"{title} ({n})"
+
+
+def title_taken(conn: sqlite3.Connection, story_id: int, title: str, exclude_id: int | None = None) -> bool:
+    return unique_title(conn, story_id, title, exclude_id) != (title or "").strip()
 
 
 def touch_story(conn: sqlite3.Connection, story_id: int) -> None:

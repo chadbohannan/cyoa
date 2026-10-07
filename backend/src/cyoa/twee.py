@@ -48,9 +48,9 @@ def _unique_names(passages: list[dict[str, Any]]) -> dict[int, str]:
     taken: set[str] = set()
     for p in sorted(passages, key=lambda p: p["id"]):
         name = p["title"].strip() or f"Passage {p['id']}"
-        if name in taken:
+        if name.casefold() in taken:
             name = f"{name} ({p['id']})"
-        taken.add(name)
+        taken.add(name.casefold())
         names[p["id"]] = name
     return names
 

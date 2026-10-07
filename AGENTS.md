@@ -42,15 +42,15 @@ When updating wiki pages, maintain cross-references. Add links to the index for 
 backend/                 # uv project (Python 3.12), FastAPI
 ├── src/cyoa/
 │   ├── main.py          # app, /api routes, `cyoa` console script (uvicorn on :8765)
-│   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, events, proposals, agent_runs, pacing, audits)
+│   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, proposals, agent_runs, pacing, audits)
 │   ├── models.py        # Pydantic shapes mirroring the tables
 │   ├── engine.py        # condition/effects evaluator, play state, problems checks, subtree, merge candidates, random playtest
 │   ├── twee.py          # Twee 3 / SugarCube export
-│   ├── agents.py        # LangGraph workflows: verbs, canon_check, expand_frontier (paced by the story's act plan); the model-call gate; RunHandle
+│   ├── agents.py        # LangGraph workflows: verbs, interview, canon_check, expand_frontier (paced by the story's act plan); the model-call gate; RunHandle
 │   ├── runs.py          # background runs: threads, SQLite checkpoints (cyoa-agent.db), SSE log, resume/cancel
 │   ├── prompts.py       # prompt roles: defaults, overrides in backend/prompts.json (committed), validate
 │   └── llm.py           # model backend: CYOA_LLM=ollama|openai (llama-server :8080/v1 by default via make)
-└── tests/               # test_api.py (routes), test_engine.py (evaluator), test_agents.py (verbs, runs; stubbed model)
+└── tests/               # test_api.py (routes), test_engine.py (evaluator), test_agents.py (verbs, interview, runs; stubbed model)
 frontend/                # Vite + React + TypeScript
 └── src/
     ├── api.ts           # typed gateway to /api (proxied to the backend in dev)
@@ -61,16 +61,20 @@ frontend/                # Vite + React + TypeScript
     ├── fields.tsx       # autosaving TextField / TextArea / NumberField / JsonField
     ├── App.tsx          # hash router: Library or StoryShell (Map / Lore / Play / Agents tabs)
     ├── Library.tsx      # story cards
-    ├── StoryCanvas.tsx  # editable React Flow map (activity highlight, subtree collapse)
+    ├── StoryCanvas.tsx  # editable React Flow map (auto layout, activity highlight, subtree collapse)
     ├── Inspector.tsx    # passage / choice / story panels, variables table
     ├── clauses.tsx      # clause-row editors for condition / effects
     ├── Player.tsx       # reader view: play/start, play/choose, debug drawer, random-playtest panel
     ├── Proposals.tsx    # assist toolbar, proposal list, Accept/Reject panel
+    ├── layout.ts        # map auto layout: tidy tree from the start in choice order (d3-hierarchy)
+    ├── prune.ts         # Delete subtree / Delete confirms shared by the map menu and the inspector (server previews the prune)
     ├── RunDock.tsx      # run dock under the map: plan summary + Run, run rows (resume/stop/cancel/review)
     ├── AgentsView.tsx   # pacing plan editor: act timeline over the per-level loop; prompt editors per step
     ├── usePacing.ts     # the story's pacing plan (acts + ending); autosaves
     ├── runs.ts          # run labels shared by the dock and Agents view
-    └── LoreView.tsx     # lore entries and events timeline
+    ├── LoreView.tsx     # premise (description + opening passage), lore entries; hosts the interview panel
+    ├── InterviewPanel.tsx # Interview Me: transcript with per-turn changes + revert, open conflicts, answer / skip / you decide
+    └── useInterview.ts  # the story's open interview, turns in flight, what the last turn touched (held in App)
 Makefile                 # install / backend / frontend / test / lint-wiki
 ```
 

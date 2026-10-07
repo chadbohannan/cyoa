@@ -127,25 +127,6 @@ class Lore(LoreCreate):
     story_id: int
 
 
-class EventCreate(BaseModel):
-    t: float
-    name: str
-    body: str = ""
-    reviewed: bool = False
-
-
-class EventPatch(BaseModel):
-    t: float | None = None
-    name: str | None = None
-    body: str | None = None
-    reviewed: bool | None = None
-
-
-class Event(EventCreate):
-    id: int
-    story_id: int
-
-
 ProposalKind = Literal["new_passage", "new_choice", "edit_passage", "edit_choice", "new_variable", "note"]
 ProposalStatus = Literal["pending", "accepted", "rejected"]
 AssistVerb = Literal["draft_body", "suggest_choices", "draft_target", "rewrite", "suggest_next"]
@@ -298,6 +279,77 @@ class PromptPreview(BaseModel):
     prompt: str
 
 
+# --- interviews ------------------------------------------------------------------
+
+
+InterviewMode = Literal["answer", "skip", "decide"]
+
+
+class InterviewWrite(BaseModel):
+    """One write an agent turn made: `before` null is a create, `after` null a delete.
+    stories rows carry {description}; lore rows {name, body} (plus kind/reviewed on a delete)."""
+
+    table: Literal["stories", "lore"]
+    id: int
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    reverted: bool = False
+
+
+class InterviewEntry(BaseModel):
+    """A transcript line. Author entries carry `mode`; agent entries the writes they made and
+    the conflict ids they opened and resolved."""
+
+    role: Literal["agent", "author"]
+    text: str
+    mode: InterviewMode | None = None
+    writes: list[InterviewWrite] = Field(default_factory=list)
+    opened: list[int] = Field(default_factory=list)
+    resolved: list[int] = Field(default_factory=list)
+
+
+class InterviewConflict(BaseModel):
+    """Two statements that cannot both hold. `source` is who found it: the model, or code
+    (a taken name, a change to a reviewed character). Only the author's answer resolves it."""
+
+    id: int
+    about: str
+    a: str
+    b: str
+    source: Literal["model", "code"]
+    status: Literal["open", "resolved"]
+    resolution: str | None = None
+
+
+class Interview(BaseModel):
+    id: int
+    story_id: int
+    status: Literal["open", "done"]
+    transcript: list[InterviewEntry]
+    conflicts: list[InterviewConflict]
+    created_at: str
+    updated_at: str
+
+
+class InterviewStart(BaseModel):
+    model: str | None = None
+
+
+class InterviewTurnRequest(BaseModel):
+    """The author's reply. `answer` needs text; `skip` and `decide` may leave it empty."""
+
+    text: str = ""
+    mode: InterviewMode = "answer"
+    model: str | None = None
+
+
+class InterviewRevert(BaseModel):
+    """Undo agent entry `entry`'s writes, or only its write at index `write`."""
+
+    entry: int
+    write: int | None = None
+
+
 class RunState(BaseModel):
     """LangGraph's view of a run: checkpointed values, what runs next, the step history."""
 
@@ -314,7 +366,6 @@ class StoryGraph(BaseModel):
     choices: list[Choice]
     variables: list[Variable]
     lore: list[Lore]
-    events: list[Event]
     proposals: list[Proposal]  # pending only
 
 
@@ -365,11 +416,10 @@ class Problems(BaseModel):
 
 
 class MergeCandidate(BaseModel):
-    """Passages sharing story time, location and events — one scene reached by several routes."""
+    """Passages sharing story time and location — one scene reached by several routes."""
 
     t: float
     location: str
-    events: list[str]
     passage_ids: list[int]
 
 
@@ -388,11 +438,28 @@ class PromoteResult(BaseModel):
 
 
 class PruneResult(BaseModel):
-    """What pruning a passage deleted: its subtree's passages (not the root) and
-    every choice out of the root or out of those passages."""
+    """What pruning a passage deletes: every passage below it the start cannot reach
+    another way (not the root itself) and every choice out of the root or them."""
 
     passage_ids: list[int]
     choice_ids: list[int]
+
+
+class PassagePosition(BaseModel):
+    id: int
+    pos_x: float
+    pos_y: float
+
+
+class LayoutRequest(BaseModel):
+    """Map positions for many passages at once: the map's "keep this arrangement"
+    after auto layout. Ids from another story or already deleted are skipped."""
+
+    positions: list[PassagePosition]
+
+
+class LayoutResult(BaseModel):
+    passage_ids: list[int]
 
 
 class MergeRequest(BaseModel):
@@ -427,3 +494,24 @@ class Playtest(BaseModel):
     unfinished: dict[int, int]
     stuck: dict[int, int]
     dangling: dict[int, int]
+
+
+class SettingsPatch(BaseModel):
+    """Machine settings (settings.py). A field left out is unchanged; null clears the saved value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    concurrency: int | None = Field(default=None, ge=1, le=64)
+
+
+class SettingsInfo(BaseModel):
+    """What is saved, what is in effect, and where the defaults come from."""
+
+    saved: dict[str, Any]  # only the keys the author set: model, concurrency
+    model: str  # in effect when a request names none
+    concurrency: int  # the gate's size now
+    backend: str  # CYOA_LLM: ollama | openai
+    url: str  # the model server the backend asks
+    env_model: str  # the launch configuration's model: what clearing the saved one falls back to
+    env_concurrency: int  # CYOA_AGENT_CONCURRENCY

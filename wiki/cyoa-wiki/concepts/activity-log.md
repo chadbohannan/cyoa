@@ -31,16 +31,16 @@ The log itself is never shown. Its docstring also notes it is not persisted: "a 
 
 ## Design
 
-- **A persisted, curated log.** Meaningful events go to a table in `cyoa.db`. The table cannot be named `events`, which is the story timeline from [agentic authoring](agentic-authoring.md). Candidates are `run_log` or `activity`. The persisted events are:
+- **A persisted, curated log.** Meaningful events go to a table in `cyoa.db`. The table cannot be named `events`: the story timeline from [agentic authoring](agentic-authoring.md) was removed on 2026-09-29, but existing databases keep its dormant `events` table. Candidates are `run_log` or `activity`. The persisted events are:
   - run start, with the run's copied plan, model and prompts (these already live on `agent_runs.params` and `budget`, so a reference will do),
   - one summary per level,
   - each passage created, including early endings,
   - each review pause, and the steer given on resume (today this sits only in checkpoint state, yet it shapes every later passage),
-  - each unresolved audit,
+  - each audit round's notes,
   - errors, cancel and finish.
 
   The `activity` pulses and `node` finishes stay in memory. They exist for the live map.
-- **Provenance on the passage.** When `grow` inserts a passage, it already writes `meta` (the `{"audit": ...}` of [refinement loops](refinement-loops.md)). It would also record the run id, the act, and the prompt role that drafted the passage. The passage Inspector then shows "written by run #12 · Confrontation · `frontier_passage`", next to its `AuditFlag`, and links to that run in the log. The act is only known once act pacing lands, so the act field waits for it.
+- **Provenance on the passage.** When `grow` inserts a passage, it writes an empty `meta`. It would also record the run id, the act, and the prompt role that drafted the passage. The passage Inspector then shows "written by run #12 · Confrontation · `frontier_passage`", and links to that run in the log. The act is only known once act pacing lands, so the act field waits for it.
 - **The feed.** It is an Activity tab beside Map / Lore / Play / Agents, grouped by run, newest first:
   - a run header, with a "ran with" disclosure listing the plan summary, model and prompt text,
   - lines per level showing act, passages, endings and retries,
@@ -61,3 +61,8 @@ The log itself is never shown. Its docstring also notes it is not persisted: "a 
 | `backend/src/cyoa/main.py` (`run_events`) | the SSE replay/tail route |
 | `frontend/src/api.ts` (`RunEvent`), `frontend/src/useRuns.ts` | the event types and their only consumer today |
 | `frontend/src/AgentsView.tsx` (`RunPanel`, removed 2026-09-29) | the run inspector this replaces |
+
+
+## Event capture (2026-10-04)
+
+The event stream is now kept. `Manager._push` writes every event except `progress` to the `run_events` table (`run_id`, `seq`, `at`, `type`, JSON `data`), which cascades with the run row, so the dock's Clear history removes it. When a run is no longer live in memory (after a restart), the SSE route replays it from the table. A `retry` event carries the passage, phase, `attempt`, `kind` (`exception` for a failed call or a schema failure, `refused` for an answer the pacing checks rejected), `seconds` the attempt took, and the reason. Before this, a failed call was folded into "the answer did not match the required fields", which hid timeouts and connection errors among genuine schema failures. To list them: `sqlite3 backend/cyoa.db "select run_id, json_extract(data,'$.passage_id'), json_extract(data,'$.kind'), json_extract(data,'$.seconds'), json_extract(data,'$.reason') from run_events where type='retry'"`.

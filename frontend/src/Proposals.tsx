@@ -3,32 +3,9 @@
 // writes to the story; everything here is otherwise read-only.
 
 import { useState } from 'react'
-import type { AssistVerb, AuditMeta, Passage, Proposal } from './api'
+import type { AssistVerb, Passage, Proposal } from './api'
 import type { Selection } from './StoryCanvas'
 import type { StoryStore } from './useStory'
-
-// A refinement pass that gave up with issues still open (agents.DEFAULT_REFINE's
-// on_unresolved: 'keep_flagged') — shown wherever the flag can land: a passage's own
-// meta.audit, or a new_choice proposal's payload.audit for its not-yet-created target.
-export function AuditFlag({ audit }: { audit: AuditMeta }) {
-  return (
-    <details className="audit-flag">
-      <summary>
-        <span className="badge unresolved">unresolved</span>
-        {' '}refinement gave up after {audit.rounds} round{audit.rounds === 1 ? '' : 's'} with {audit.issues.length}
-        {' '}issue{audit.issues.length === 1 ? '' : 's'} still open
-      </summary>
-      <ul className="issues">
-        {audit.issues.map((i, n) => (
-          <li key={n}>
-            <span className={`badge ${i.severity}`}>{i.severity}</span> {i.problem}
-            <div className="muted small">“{i.quote}”{i.evidence && <> — {i.evidence}</>}</div>
-          </li>
-        ))}
-      </ul>
-    </details>
-  )
-}
 
 const TONES = ['vivid', 'grim', 'playful', 'terse', 'lyrical']
 
@@ -94,7 +71,7 @@ function summary(q: Proposal): string {
   switch (q.kind) {
     case 'edit_passage': return pl.is_ending !== undefined ? 'Mark as ending' : `${q.verb === 'rewrite' ? 'Rewrite' : 'Body'}: ${excerpt(pl.body)}`
     case 'new_passage': return `New passage “${pl.title}”`
-    case 'new_choice': return `Choice “${pl.text}” → ${pl.new_target ? `new “${pl.new_target.title}”` : 'existing passage'}${pl.audit ? ' ⚠ unresolved' : ''}`
+    case 'new_choice': return `Choice “${pl.text}” → ${pl.new_target ? `new “${pl.new_target.title}”` : 'existing passage'}`
     case 'edit_choice': return `Choice text: ${pl.text}`
     case 'new_variable': return `Variable ${pl.name} (${pl.kind})`
     default: return pl.issues?.length ? `${pl.issues.length} canon issue${pl.issues.length > 1 ? 's' : ''}` : excerpt(pl.text) || 'note'
@@ -190,7 +167,6 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
               ? <>a new passage <strong>“{pl.new_target.title}”</strong> (created empty on accept)</>
               : <strong>{graph.passages.find((p) => p.id === pl.to_passage)?.title ?? '?'}</strong>}
           </p>
-          {pl.audit && <AuditFlag audit={pl.audit} />}
         </>
       )}
       {q.kind === 'edit_choice' && <div className="proposal-text">{pl.text}</div>}

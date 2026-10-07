@@ -11,8 +11,8 @@ import { guardWith } from './store'
 
 const LANDS_ROWS = new Set(['grow', 'check_passage'])
 
-export function useRuns(storyId: number, deps: { reload: () => void; model: string | null; setError: (e: string | null) => void }) {
-  const { reload, model, setError } = deps
+export function useRuns(storyId: number, deps: { reload: () => void; setError: (e: string | null) => void }) {
+  const { reload, setError } = deps
   const guard = guardWith(setError)
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [activity, setActivity] = useState<Record<number, string>>({})
@@ -69,8 +69,8 @@ export function useRuns(storyId: number, deps: { reload: () => void; model: stri
     return () => Object.values(open).forEach((es) => es.close())
   }, [])
 
-  const startRun = guard(async (req: Omit<RunCreate, 'model'>) => {
-    const run = await api.runs.start(storyId, { ...req, model })
+  const startRun = guard(async (req: RunCreate) => {
+    const run = await api.runs.start(storyId, req)
     setRuns((rs) => [run, ...rs])
     return run
   })
@@ -83,5 +83,10 @@ export function useRuns(storyId: number, deps: { reload: () => void; model: stri
     patchRun(id, () => run)
   })
 
-  return { runs, activity, refreshRuns, startRun, resumeRun, cancelRun }
+  const clearRuns = guard(async () => {
+    await api.runs.clear(storyId)
+    await refreshRuns()
+  })
+
+  return { runs, activity, refreshRuns, startRun, resumeRun, cancelRun, clearRuns }
 }

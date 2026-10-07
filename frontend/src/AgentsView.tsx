@@ -9,7 +9,7 @@
 //    nothing here restates which roles a step composes. A step opens its prompt
 //    editors, with the preview's pacing slots filled as the selected stage fills them.
 //
-// The second tab draws the assist verbs and canon_check the same way, without a plan.
+// The second tab draws the assist verbs, the interview and canon_check the same way, without a plan.
 //
 // The loop must look like the map but never be confused for it, hence its own
 // node type: steps can be clicked, never dragged or connected. Prompt roles are
@@ -251,7 +251,7 @@ function Timeline({ plan, stage, onPick, onAdd }: {
       <button className={`stage resolution ${stage === n ? 'selected' : ''}`} style={{ flexGrow: 1 }} onClick={() => onPick(n)}>
         <span className="stage-name">Resolution</span>
         <span className="ticks"><span className="tick">L{planDepth(plan)}</span></span>
-        <span className="stage-meta">endings · {plan.ending.length || 'any length'}</span>
+        <span className="stage-meta">endings</span>
       </button>
     </div>
   )
@@ -304,10 +304,10 @@ function StagePanel({ plan, stage, pacing, onPick }: {
           <span>Auto-accept proposals on unreviewed passages</span>
         </label>
         <label className="field row">
-          <span>Refine rounds</span>
-          <input type="number" min={0} max={6} className="small-num" value={refine.rounds ?? 2}
+          <span>Revisions per passage</span>
+          <input type="number" min={0} max={6} className="small-num" value={refine.rounds ?? 3}
                  onChange={(e) => setPolicy({ refine: { ...refine, rounds: clamp(Number(e.target.value), 0, 6) } })} />
-          <span className="muted small">audit → revise per passage; 0 turns the audits off</span>
+          <span className="muted small">audit → revise, at most this many times; 0 skips the audits</span>
         </label>
         <div className="row">
           <span className="spacer" />
@@ -325,10 +325,7 @@ function StagePanel({ plan, stage, pacing, onPick }: {
           Every passage at this level is an ending, written with the Frontier ending prompt. It follows the last act's
           choices, so each of them gets its own resolution.
         </p>
-        <label className="field">
-          <span>Length</span>
-          <input value={plan.ending.length} placeholder="e.g. 400–600 words" onChange={(e) => setEnding({ length: e.target.value })} />
-        </label>
+        <p className="small muted">An ending has no length target: it runs as long as the conclusion needs.</p>
         <label className="field">
           <span>Guidance</span>
           <textarea rows={6} value={plan.ending.guidance} onChange={(e) => setEnding({ guidance: e.target.value })} />
@@ -369,7 +366,7 @@ function StagePanel({ plan, stage, pacing, onPick }: {
         <input value={a.length} placeholder="e.g. 200–300 words" onChange={(e) => set({ length: e.target.value })} />
       </label>
       <label className="field">
-        <span>Guidance <span className="muted small">— fills {'{act_guidance}'}</span></span>
+        <span>Guidance <span className="muted small">— the writers' direction for this act</span></span>
         <textarea rows={6} value={a.guidance} onChange={(e) => set({ guidance: e.target.value })} />
       </label>
       <div className="row">

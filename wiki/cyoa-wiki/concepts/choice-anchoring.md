@@ -4,7 +4,7 @@ This page explores a fundamental tension in multi-timeline interactive narrative
 
 ## The Coherence Problem
 
-The current design treats [passages](story-model.md) and the [story clock](agentic-authoring.md#the-story-clock) as the coherence layer: agents generate new branches guided by lore, events, location, and the passage's position in story-time `t`. This works for *world consistency* — a character's biography stays true, events happen once on every branch — but it fails at *narrative coherence*.
+The current design treats [passages](story-model.md) and the [story clock](agentic-authoring.md#the-story-clock) as the coherence layer: agents generate new branches guided by lore, location, and the passage's position in story-time `t`. This works for *world consistency* — a character's biography stays true, events happen once on every branch — but it fails at *narrative coherence*.
 
 A book is about something specific. It has a through-line, tone, and set of concerns. When `expand_frontier` generates two branches from a passage, they inherit only the immediate passage text and the world facts; they do not see the narrative arc that led there. One agent might write "the queen betrays you" and another might write "the queen rewards you," both valid locally but contradictory in meaning. A reader following one path feels a coherent story; a reader who later learns the other path exists learns that the author did not choose.
 
@@ -36,6 +36,8 @@ An agent generating from a frontier passage sees:
 4. Which untaken anchors remain — what other story possibilities still exist
 
 ## Data Model Changes
+
+The `events` table this design anchors to was removed on 2026-09-29 along with the timeline (see [agentic authoring](agentic-authoring.md)), so as things stand an anchor can only be a lore entry; `event_id` below would return only with the timeline.
 
 ### Choices gain an anchor
 

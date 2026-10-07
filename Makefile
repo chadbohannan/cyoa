@@ -7,9 +7,13 @@ install: ## install backend (uv) and frontend (npm) deps
 	cd backend && uv sync
 	cd frontend && npm install
 
-# CYOA_LLM=ollama (OLLAMA_URL) or openai (CYOA_OPENAI_URL, default a llama-server on :8080/v1)
+# CYOA_LLM=ollama (OLLAMA_URL) or openai (CYOA_OPENAI_URL). The openai backend here is the router on
+# :4000/v1, which picks a node by model name ("default", llm.py's own default, is refused: "no nodes serve
+# model 'default'"). Override for a bare llama-server: CYOA_OPENAI_URL=http://localhost:8080/v1 CYOA_OPENAI_MODEL=default
 CYOA_LLM ?= openai
-export CYOA_LLM
+CYOA_OPENAI_URL ?= http://localhost:4000/v1
+CYOA_OPENAI_MODEL ?= salad-chat
+export CYOA_LLM CYOA_OPENAI_URL CYOA_OPENAI_MODEL
 
 backend: ## run FastAPI with reload on :8765 (CYOA_PORT); model backend per CYOA_LLM
 	cd backend && uv run cyoa
@@ -17,9 +21,9 @@ backend: ## run FastAPI with reload on :8765 (CYOA_PORT); model backend per CYOA
 frontend: ## run Vite dev server on :5173 (proxies /api to :8765, CYOA_API)
 	cd frontend && npm run dev
 
-serve: ## build the frontend and run the backend serving it, single process on :8765
+serve: ## build the frontend and run the backend serving it, single process on 0.0.0.0:8765 (CYOA_HOST)
 	cd frontend && npm run build
-	cd backend && CYOA_RELOAD=0 uv run cyoa
+	cd backend && CYOA_RELOAD=0 CYOA_HOST=$${CYOA_HOST:-0.0.0.0} uv run cyoa
 
 test: test-backend test-frontend ## run all tests
 
