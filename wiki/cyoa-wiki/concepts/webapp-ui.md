@@ -2,6 +2,9 @@
 
 This page scopes the local single-user web UI for making and playing stories. It is a design target; the [frontend](../systems/frontend.md) page describes what has shipped. As of 2026-09-20 phases 1 and 2 are implemented — Library, editable Map with search and the problems overlay, Inspector with clause-row editors, variables, Lore, the Player with its debug drawer and "play from here" — and the LLM assistance below landed the same day as phase 3, so every surface on this page exists. The patterns come from the [editor UX survey](../syntheses/editor-ux-survey.md); the data they act on is the [story model](story-model.md).
 
+> **Superseded 2026-10-07:** the variable, condition and effects design below, the player's state and debug drawer, and the `undeclared` problem were removed; see [Stateless Story](stateless-story.md).
+
+
 ## Three surfaces
 
 The app has one shell — a top bar with the story title, a story switcher, and Edit / Play tabs — and three surfaces under it.

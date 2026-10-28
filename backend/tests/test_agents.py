@@ -90,7 +90,6 @@ def story(client):
     s = client.post("/api/stories", json={"title": "The Lamp", "description": "A cave."}).json()
     base = f"/api/stories/{s['id']}"
     client.patch(f"{base}/passages/{s['start_passage_id']}", json={"body": "You stand at the mouth of a cave."})
-    client.post(f"{base}/variables", json={"name": "gold", "kind": "stat", "default": 5})
     client.post(f"{base}/lore", json={"kind": "character", "name": "The Peddler", "body": "Sells lamps."})
     pit = client.post(f"{base}/passages", json={"title": "The Pit", "pos_x": 0, "pos_y": 200}).json()
     client.post(f"{base}/choices", json={"from_passage": s["start_passage_id"], "to_passage": pit["id"], "text": "Enter"})
@@ -114,7 +113,7 @@ def test_draft_body_context_and_accept(client, story, monkeypatch):
     assert p["kind"] == "edit_passage" and p["target_passage"] == story["start"] and p["status"] == "pending"
     # the prompt carried the neighbourhood
     prompt = fake.prompts[0]
-    for needle in ("STORY: The Lamp", "gold (stat", "[character] The Peddler", "'Enter' -> The Pit", "'Wait' -> (no target yet)"):
+    for needle in ("STORY: The Lamp", "[character] The Peddler", "'Enter' -> The Pit", "'Wait' -> (no target yet)"):
         assert needle in prompt
 
     g = client.get(f"{story['base']}/graph").json()

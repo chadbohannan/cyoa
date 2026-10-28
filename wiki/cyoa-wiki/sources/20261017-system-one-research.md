@@ -1,0 +1,33 @@
+# System One / Jev decision models — research notes (2026-10-17)
+
+Raw notes from a web research pass and a read of the user's example client. Facts are as extracted by a fetch-and-summarize tool, not verbatim page copies; vendor numbers are vendor-reported and unreproduced. Dates of the releases differ slightly between sources.
+
+## Sources consulted
+
+- Ollama docs, Decision capability — https://docs.ollama.com/capabilities/decision
+- Ollama library page for clef-flash — https://ollama.com/library/clef-flash
+- Ollama blog, "Ollama now supports Jev-style decision models" (2026-09-29) — https://ollama.com/blog/ollama-now-supports-jev-style-decision-models
+- DataCamp, "Jev: TypeSafe's System One Model Explained" — https://www.datacamp.com/blog/system-one-models-jev
+- kmail.at, "System One Goes Local: Five Models, Eighteen Days, One Wire Format" — https://kmail.at/blog/system-one-goes-local
+- arXiv 2609.28940, "Calibrated Decision Models for Autonomous Penetration-Testing Harnesses: JEV and Laya as System One Decision Layers" — https://arxiv.org/pdf/2609.28940 (PDF was not machine-readable in this pass; only metadata read)
+- Search hits not opened: The New Stack on the System One API agreement; Laurence Moroney, "Small Decision Models Go Local"; llmconfigurator.com decision-model guides; TypeSafe/Jev explainers from You.com, Beam, Requesty, Towards Data Science.
+- Local: `ollama show clef-flash`, and the user's example client `~/workspace/chat/clef.py` (tkinter; posts to `/v1/systemone`).
+
+## Extracted facts
+
+- **Jev** is TypeSafe's first "System One" model (announced 2026-09-15, early access). It takes unstructured state and returns typed, probabilistic decisions instead of generating text; a parallel sampler produces all outputs in one query. TypeSafe says it trains with "Reinforcement Learning for Calibrated Decisions" (RLCD). Vendor claims: 0% structured-output and tool-call error rate, 70–500 ms latency, $0.042 per million input tokens with free output, 67.8% on its own four-workflow eval versus 67.9% for GPT-5.6 Terra and 74.1% for GPT-5.6 Sol.
+- **Ollama 0.35.0** (2026-09-29) added `POST /v1/systemone`, a Jev-compatible endpoint; 0.35.1 added image input. Launch models: `nimble` (Bespoke Labs, 9B), `tev1` (Together AI, 4B, experimental) and `tev1:0.8b`; later `clef` (Cloudflare, 27B) and `clef-flash` (Cloudflare, 9B). TypeSafe's `typesafe-sdk` works pointed at Ollama. Not yet in the Ollama CLI/Python/JS libraries as of the library page.
+- **Request**: `model`, `state` (text or JSON object; required), optional `images` (base64 PNG/JPEG/WebP, no URLs), `questions` (object keyed by name, 1–64), optional `keep_alive`. Names: up to 100 chars of ASCII letters, digits, `_ . -`. Local requests without images must fit in 64 KiB; input is limited to a 65,536-token window. No streaming; GGUF only.
+- **Question types**: `choice` (2–26 options, key → description) returns `choice`, `probabilities`, `confidence`; `noul` (yes/no; `criteria` may relabel `"false"`/`"true"`) returns the probability of true; `score` (2–10 per docs page, 2–26 per library page, ordered lowest → highest) returns a probability-weighted average of zero-based level indices, plus `legend`, `probabilities`, `confidence`.
+- **Confidence** "measures how strongly the model favors one answer"; "a higher value does not guarantee the answer is correct." The Ollama blog's sample shows `urgency` score 0.815 with confidence 0.046. Ties resolve to option order, so list the preferred option first.
+- **clef-flash** (Ollama library): 9B multimodal, fine-tuned from Qwen3.5-9B, Apache 2.0, ~11 GB, requires Ollama ≥ 0.35.1. Lowest latency of any decision model in Cloudflare's Decision Index (median 38.8 ms, p95 122.4 ms vs. Clef 27B 209.3/238.6 and Jev 524.1/536.0). Context stated as both 256K and 64K on one page. Scores every option of every question jointly in one non-autoregressive pass.
+- **Benchmarks (clef-flash / clef / Jev)**: BFCL 98.8/98.5/95.8; API-Bank 93.1/91.9/88.2; BANKING77 90.9/94.2/79.7; CLINC150+OOS 66.8/97.4/89.3; home-appliance simulator 97.7/83.0/52.3; ANLI 59.1/69.8/74.8; RouterBench 79.9/79.7/79.9; When2Call 65.6/72.4/81.0. Typesafe Evals for clef-flash: invoice 57.1, customer service 77.0, security incidents 61.7, agent-trace observability 69.8. Nimble 9B averaged 75.7% over 13 datasets, Tev1 4B 73.3%, Tev1 0.8B 63.5%, Jev 1.13 76.0%.
+- **Stated limitations**: returns a number, not a rationale; only works when valid answers are bounded in advance; the developer designs the schema; confidently wrong but well-formed answers are the typical failure; prompt injection, non-English input and out-of-distribution calibration untested for Tev1. Calibration is a property of groups of predictions, not of one answer; test thresholds on your own data; pin a versioned model ID.
+- **Recommended uses (vendors)**: routing and triage, scoring or guardrailing LLM outputs, gating an agent step (go/no-go on a proposed tool call), a fast first pass that escalates low-confidence cases to a frontier LLM.
+
+## Local observations (2026-10-17)
+
+- `ollama list` shows four tags, all ~10 GB: `clef-flash`, `clef-flash-4k`, `clef-flash-8k`, `clef-flash-lite`. There is no plain `clef` tag. `ollama show clef-flash`: architecture `qwen35`, 9.1B parameters, Q8_0, context length 262144 (modelfile `num_ctx` 16384), capabilities `decision` and vision (CLIP projector, 456M), raw-prompt `TEMPLATE {{ .Prompt }}`. The `-4k` / `-8k` / `-lite` meanings are not documented on the library page, which lists only `latest` and `9b`; the user describes them as one fungible class with a quality gradient.
+- `clef.py` posts `{"model","state","questions","images"}` to `http://localhost:11434/v1/systemone` with a 60 s timeout; its question dicts are `{"type","instructions","criteria"}` where `choice` criteria is key → description, `score` criteria is an ordered label list (worst → best), and `noul` omits criteria.
+- Modelfiles: all four tags reference the same two blobs and differ only in `num_ctx` (16384 / 8192 / 4096 / 2048). Same weights, no quality gradient.
+- Probe, run after the GPU was freed: `-lite`, `-4k`, `-8k` returned identical results, 4–5 s cold for a 372-token state. For `{noul coherent, score tension [flat, some, high], choice kind}` the answers were noul 0.858; score 1.847 (probabilities 0.040/0.072/0.887, confidence 0.613, `legend` {"0":"flat","1":"some","2":"high"}); choice `action` 0.804 (confidence 0.477). `usage.output_tokens` was 0. `clef-flash` (16k) failed with CUDA OOM on a 3.49 GB compute buffer on the empty 12 GB card. An earlier probe the same day had also failed because another process held ~6.4 GB.

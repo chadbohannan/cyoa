@@ -13,12 +13,14 @@ dependencies = [
     "langchain-openai>=1.6.2",
     "langgraph>=1.2.11",
     "langgraph-checkpoint-sqlite>=3.1.1",
+    "mcp>=2.3.0",
     "pydantic>=2.13.5",
     "uvicorn[standard]>=0.53.0",
 ]
 
 [project.scripts]
 cyoa = "cyoa.main:run"
+cyoa-mcp = "cyoa.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.8.13,<0.9.0"]

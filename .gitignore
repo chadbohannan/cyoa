@@ -17,3 +17,6 @@ eval-out/
 
 settings.json
 backend/settings.json
+
+# machine-specific MCP config (absolute paths)
+.mcp.json

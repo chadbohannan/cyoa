@@ -21,7 +21,7 @@ export function LoreView({ store, interview }: { store: StoryStore; interview: I
         <Premise store={store} interview={interview} />
         <section>
           <h2>Lore</h2>
-          <p className="muted">Characters, places, factions and rules that hold on every branch.</p>
+          <p className="muted">Characters, places, factions, rules and facts that hold on every branch. A fact is named in a passage’s reveals and needs, which fact_check walks per route.</p>
           {LORE_KINDS.map((kind) => (
             <LoreGroup key={kind} kind={kind} entries={graph.lore.filter((l) => l.kind === kind)} store={store} touched={touched} />
           ))}

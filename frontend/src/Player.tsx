@@ -40,7 +40,7 @@ export function Player({ store, from, onStop }: Props) {
     setBusy(true)
     setError(null)
     try {
-      const view = await api.play.choose(storyId, c.id, cur.view.state)
+      const view = await api.play.choose(storyId, c.id)
       setSteps((s) => [...s, { view, via: c }])
     } catch (e) {
       setError((e as Error).message)
@@ -83,19 +83,6 @@ export function Player({ store, from, onStop }: Props) {
           <summary>Debug</summary>
           <div className="debug-grid">
             <section>
-              <h4>State</h4>
-              <table className="vars">
-                <tbody>
-                  {Object.entries(cur.view.state).map(([k, v]) => (
-                    <tr key={k}><td><code>{k}</code></td><td><code>{JSON.stringify(v)}</code></td></tr>
-                  ))}
-                  {Object.keys(cur.view.state).length === 0 && <tr><td className="muted">no variables</td></tr>}
-                </tbody>
-              </table>
-              <h4>Last effects</h4>
-              <pre className="mono">{cur.via ? JSON.stringify(cur.via.effects) : '—'}</pre>
-            </section>
-            <section>
               <h4>Path</h4>
               <ol className="path">
                 {steps.map((s, i) => (
@@ -117,7 +104,7 @@ export function Player({ store, from, onStop }: Props) {
   )
 }
 
-// Random playthroughs through the same evaluator as the reader above: a
+// Random playthroughs over the same graph as the reader above: a
 // coverage report over the whole story, not a run. Titles are looked up in the
 // graph so the report reads as passages, not ids.
 function PlaytestPanel({ store }: { store: StoryStore }) {
@@ -148,7 +135,7 @@ function PlaytestPanel({ store }: { store: StoryStore }) {
 
   return (
     <details className="debug playtest">
-      <summary>Random playtest{report ? ` · ${report.unvisited.length} unvisited · ${Object.keys(report.stuck).length} stuck` : ''}</summary>
+      <summary>Random playtest{report ? ` · ${report.unvisited.length} unvisited` : ''}</summary>
       <div className="player-bar">
         <label>runs <input type="number" min={1} max={10000} value={runs} onChange={(e) => setRuns(Number(e.target.value) || 1)} style={{ width: '5em' }} /></label>
         <button disabled={busy || !graph} onClick={run}>{busy ? 'Playing…' : 'Play randomly'}</button>
@@ -167,8 +154,6 @@ function PlaytestPanel({ store }: { store: StoryStore }) {
             <ul className="path">{counts(report.endings, title)}{Object.keys(report.endings).length === 0 && <li className="muted">none</li>}</ul>
             <h4>Unfinished stubs hit (no choices, not marked ending)</h4>
             <ul className="path">{counts(report.unfinished, title)}{Object.keys(report.unfinished).length === 0 && <li className="muted">none</li>}</ul>
-            <h4>Stuck (choices exist, none open)</h4>
-            <ul className="path">{counts(report.stuck, title)}{Object.keys(report.stuck).length === 0 && <li className="muted">none</li>}</ul>
             <h4>Dangling choices hit</h4>
             <ul className="path">{counts(report.dangling, choiceLabel)}{Object.keys(report.dangling).length === 0 && <li className="muted">none</li>}</ul>
           </section>

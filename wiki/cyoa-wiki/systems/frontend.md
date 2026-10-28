@@ -2,7 +2,7 @@
 
 The frontend is a Vite + React + TypeScript app in `frontend/`, started with `make frontend` on port 5173. Its `vite.config.ts` proxies `/api` to the [backend](backend.md) at `CYOA_API` (default `http://127.0.0.1:8765`), so the app code calls relative `/api/...` paths and never knows the backend's address. As of 2026-09-20 it implements phases 1 to 4 of [the webapp UI](../concepts/webapp-ui.md) and [agentic authoring](../concepts/agentic-authoring.md): the Library, the editable map with its inspector, search, problems overlay and proposal overlay, variables with clause-row editors, the Lore surface, the Player, and the assist verbs with their Accept / Reject review.
 
-`src/api.ts` is the typed gateway: the row interfaces mirror the backend's Pydantic models field for field, and the `api` object wraps every route. The four child tables (`passages`, `choices`, `variables`, `lore`; `events` was a fifth until 2026-09-29) share one `child()` factory producing `create` / `update` / `remove`, mirroring the backend's shared helpers, so the two stay in step by construction. Keeping every fetch behind this one module is what lets the [story model](../concepts/story-model.md) change shape without a hunt through components.
+`src/api.ts` is the typed gateway: the row interfaces mirror the backend's Pydantic models field for field, and the `api` object wraps every route. The child tables (`passages`, `choices`, `lore`; the `variables` table and its editor were removed 2026-10-07, see [Stateless Story](../concepts/stateless-story.md); `events` was a fifth until 2026-09-29) share one `child()` factory producing `create` / `update` / `remove`, mirroring the backend's shared helpers, so the two stay in step by construction. Keeping every fetch behind this one module is what lets the [story model](../concepts/story-model.md) change shape without a hunt through components.
 
 ## State: one store per open story
 
@@ -66,7 +66,6 @@ Story fields have no Save button (prompt roles in the Agents view are the one ex
 | `frontend/src/Library.tsx` | story cards |
 | `frontend/src/StoryCanvas.tsx` | editable React Flow map |
 | `frontend/src/Inspector.tsx` | passage / choice / story panels |
-| `frontend/src/clauses.tsx` | condition and effects clause-row editors |
 | `frontend/src/Proposals.tsx` | assist toolbar, proposal list and review panel (incl. canon notes) |
 | `frontend/src/RunDock.tsx` | run dock: expand form, run rows with resume / stop / cancel / review |
 | `frontend/src/AgentsView.tsx` | workflow topology, clickable nodes; node / prompt / run inspector |

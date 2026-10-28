@@ -1,4 +1,4 @@
-"""FastAPI app: story / passage / choice / variable / lore CRUD, graph read,
+"""FastAPI app: story / passage / choice / lore CRUD, graph read,
 the stateless player, the problems validator, the assist verbs and their proposals,
 and autonomous runs with their event stream."""
 
@@ -65,9 +65,6 @@ from .models import (
     StoryGraph,
     StoryPatch,
     StorySummary,
-    Variable,
-    VariableCreate,
-    VariablePatch,
 )
 
 
@@ -211,7 +208,6 @@ def story_graph(story_id: int) -> StoryGraph:
             story=Story(**dict(story)),
             passages=[Passage(**r) for r in rows("passages", "id")],
             choices=[Choice(**r) for r in rows("choices", "from_passage, sort_order, id")],
-            variables=[Variable(**r) for r in rows("variables", "name")],
             lore=[Lore(**r) for r in rows("lore", "kind, name")],
             proposals=[Proposal(**r) for r in rows("proposals", "id") if r["status"] == "pending"],
         )
@@ -253,8 +249,8 @@ def duplicate_passage(story_id: int, passage_id: int) -> Passage:
         values["pos_y"] += 40
         copy = _insert(conn, "passages", story_id, values)
         conn.execute(
-            "INSERT INTO choices (story_id, from_passage, to_passage, text, sort_order, condition, effects)"
-            " SELECT story_id, ?, to_passage, text, sort_order, condition, effects"
+            "INSERT INTO choices (story_id, from_passage, to_passage, text, sort_order)"
+            " SELECT story_id, ?, to_passage, text, sort_order"
             " FROM choices WHERE from_passage = ?",
             (copy["id"], passage_id),
         )
@@ -295,27 +291,6 @@ def delete_choice(story_id: int, choice_id: int) -> None:
         _delete(conn, "choices", story_id, choice_id)
 
 
-# --- variables ---------------------------------------------------------------
-
-
-@app.post("/api/stories/{story_id}/variables", status_code=201)
-def create_variable(story_id: int, body: VariableCreate) -> Variable:
-    with db.transaction() as conn:
-        return Variable(**_insert(conn, "variables", story_id, body.model_dump()))
-
-
-@app.patch("/api/stories/{story_id}/variables/{variable_id}")
-def update_variable(story_id: int, variable_id: int, body: VariablePatch) -> Variable:
-    with db.transaction() as conn:
-        return Variable(**_update(conn, "variables", story_id, variable_id, body))
-
-
-@app.delete("/api/stories/{story_id}/variables/{variable_id}", status_code=204)
-def delete_variable(story_id: int, variable_id: int) -> None:
-    with db.transaction() as conn:
-        _delete(conn, "variables", story_id, variable_id)
-
-
 # --- lore -----------------------------------------------------------------
 
 
@@ -339,13 +314,11 @@ def delete_lore(story_id: int, lore_id: int) -> None:
 
 # --- play & problems ---------------------------------------------------------
 #
-# The server holds no playthrough state: the client sends the state it was last
-# given, the engine re-checks the chosen choice against it, applies the effects
-# and returns the next view. Everything here goes through engine.py so the
-# player, the validator and the map agree on what a condition means.
+# The server holds no playthrough state, and neither does the story: a reader's position
+# is a passage and what the next step shows is that passage's choices.
 
 
-def _view(conn: sqlite3.Connection, story_id: int, passage_id: int, state: engine.State) -> PlayView:
+def _view(conn: sqlite3.Connection, story_id: int, passage_id: int) -> PlayView:
     row = conn.execute("SELECT * FROM passages WHERE id = ? AND story_id = ?", (passage_id, story_id)).fetchone()
     if row is None:
         raise HTTPException(404, "passage not found")
@@ -353,22 +326,14 @@ def _view(conn: sqlite3.Connection, story_id: int, passage_id: int, state: engin
     # is_ending is authoritative: a decided ending shows no choices even if some
     # are still attached to the row (e.g. left over from before it was marked).
     if passage.is_ending:
-        return PlayView(passage=passage, choices=[], state=state)
+        return PlayView(passage=passage, choices=[])
     choices = [
         _decode("choices", r)
         for r in conn.execute(
             "SELECT * FROM choices WHERE from_passage = ? ORDER BY sort_order, id", (passage_id,)
         ).fetchall()
     ]
-    return PlayView(
-        passage=passage,
-        choices=[Choice(**c) for c in choices if engine.check(c["condition"], state)],
-        state=state,
-    )
-
-
-def _variables(conn: sqlite3.Connection, story_id: int) -> list[dict[str, Any]]:
-    return [_decode("variables", r) for r in conn.execute("SELECT * FROM variables WHERE story_id = ?", (story_id,))]
+    return PlayView(passage=passage, choices=[Choice(**c) for c in choices])
 
 
 def _passages(conn: sqlite3.Connection, story_id: int) -> list[dict[str, Any]]:
@@ -386,7 +351,7 @@ def play_start(story_id: int, body: PlayStart) -> PlayView:
         start = body.passage_id if body.passage_id is not None else story["start_passage_id"]
         if start is None:
             raise HTTPException(409, "story has no start passage")
-        return _view(conn, story_id, start, engine.initial_state(_variables(conn, story_id)))
+        return _view(conn, story_id, start)
 
 
 @app.post("/api/stories/{story_id}/play/choose")
@@ -396,16 +361,9 @@ def play_choose(story_id: int, body: PlayChoose) -> PlayView:
         row = conn.execute("SELECT * FROM choices WHERE id = ? AND story_id = ?", (body.choice_id, story_id)).fetchone()
         if row is None:
             raise HTTPException(404, "choice not found")
-        choice = _decode("choices", row)
-        if choice["to_passage"] is None:
+        if row["to_passage"] is None:
             raise HTTPException(409, "choice is dangling")
-        # never trust the client's filtering
-        if not engine.check(choice["condition"], body.state):
-            raise HTTPException(409, "choice condition is not met")
-        # names missing from the submitted state get their defaults; unknown names are dropped
-        declared = engine.initial_state(_variables(conn, story_id))
-        state = {k: body.state.get(k, v) for k, v in declared.items()}
-        return _view(conn, story_id, choice["to_passage"], engine.apply(choice["effects"], state))
+        return _view(conn, story_id, row["to_passage"])
 
 
 @app.get("/api/stories/{story_id}/problems")
@@ -413,7 +371,7 @@ def story_problems(story_id: int) -> Problems:
     with db.transaction() as conn:
         story = _require_story(conn, story_id)
         passages, choices = _passages(conn, story_id), _choices(conn, story_id)
-        return Problems(**engine.problems(story["start_passage_id"], passages, choices, _variables(conn, story_id)))
+        return Problems(**engine.problems(story["start_passage_id"], passages, choices))
 
 
 @app.post("/api/stories/{story_id}/playtest")
@@ -425,7 +383,7 @@ def playtest(story_id: int, body: PlaytestRequest) -> Playtest:
             raise HTTPException(409, "story has no start passage")
         return Playtest(
             **engine.random_playthroughs(
-                story["start_passage_id"], _passages(conn, story_id), _choices(conn, story_id), _variables(conn, story_id),
+                story["start_passage_id"], _passages(conn, story_id), _choices(conn, story_id),
                 runs=body.runs, max_steps=body.max_steps, seed=body.seed,
             )
         )
@@ -435,7 +393,7 @@ def playtest(story_id: int, body: PlaytestRequest) -> Playtest:
 def export_twee(story_id: int) -> PlainTextResponse:
     with db.transaction() as conn:
         story = _require_story(conn, story_id)
-        text = twee.export(dict(story), _passages(conn, story_id), _choices(conn, story_id), _variables(conn, story_id))
+        text = twee.export(dict(story), _passages(conn, story_id), _choices(conn, story_id))
     name = "".join(ch if ch.isalnum() or ch in "-_ " else "" for ch in story["title"]).strip() or "story"
     return PlainTextResponse(text, media_type="text/plain; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{name}.twee"'})
 

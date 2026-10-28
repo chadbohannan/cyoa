@@ -1,23 +1,9 @@
-"""Condition and effects evaluator — the one place their semantics live.
+"""Graph analysis for the story: the one place its structure is read.
 
-The player, the ``problems`` validator and (later) prompt construction and
-export all go through these functions, so the JSON vocabulary stored on
-``choices.condition`` / ``choices.effects`` is defined here and nowhere else.
-
-Conditions::
-
-    {}                                             always true
-    {"var": "brave", "op": "==", "value": true}    one clause
-    {"all": [cond, ...]} / {"any": [cond, ...]}    combinators, nestable
-
-Effects::
-
-    {"set": {"brave": true}, "add": {"gold": -5}, "give": ["lamp"], "take": ["lamp"]}
-
-State is a plain ``{name: value}`` dict seeded from the variables table. A
-condition naming an undeclared variable is false; an effect naming one is
-ignored. Items are counts: ``give`` increments, ``take`` decrements and
-floors at zero.
+A story is passages joined by choices and nothing else: no variables, conditions or effects
+(removed 2026-10-07, concepts/stateless-story.md). Whatever a reader has done is carried by
+the path they took, so the validator, the player, the random playtest and prompt construction
+all walk the same graph through the functions here.
 """
 
 from __future__ import annotations
@@ -30,108 +16,25 @@ from typing import Any, Iterable
 
 from fastapi import HTTPException
 
-State = dict[str, Any]
-
 # JSON columns that need encoding/decoding; shared with main.py row helpers
 JSON_COLS: dict[str, set[str]] = {
     "passages": {"meta"},
-    "choices": {"condition", "effects"},
-    "variables": {"default"},
+    "choices": set(),
     "lore": set(),
     "proposals": {"payload"},
     "agent_runs": {"params", "scope", "budget", "policy", "progress"},
     "interviews": {"transcript", "conflicts"},
 }
 
-OPS = {
-    "==": lambda a, b: a == b,
-    "!=": lambda a, b: a != b,
-    "<": lambda a, b: a < b,
-    "<=": lambda a, b: a <= b,
-    ">": lambda a, b: a > b,
-    ">=": lambda a, b: a >= b,
-}
-
-
-def initial_state(variables: Iterable[dict[str, Any]]) -> State:
-    return {v["name"]: v["default"] for v in variables}
-
-
-def check(condition: Any, state: State) -> bool:
-    """True when ``condition`` holds in ``state``. Malformed conditions are false."""
-    if not isinstance(condition, dict):
-        return False
-    if not condition:
-        return True
-    if "all" in condition:
-        return isinstance(condition["all"], list) and all(check(c, state) for c in condition["all"])
-    if "any" in condition:
-        return isinstance(condition["any"], list) and any(check(c, state) for c in condition["any"])
-    name, op = condition.get("var"), condition.get("op")
-    if name not in state or op not in OPS:
-        return False
-    try:
-        return bool(OPS[op](state[name], condition.get("value")))
-    except TypeError:  # e.g. ordering a bool against a string
-        return False
-
-
-def apply(effects: Any, state: State) -> State:
-    """Return a new state with ``effects`` applied. Undeclared names are skipped."""
-    out = dict(state)
-    if not isinstance(effects, dict):
-        return out
-    for name, value in _items(effects.get("set")):
-        if name in out:
-            out[name] = value
-    for name, value in _items(effects.get("add")):
-        if name in out and _numeric(out[name]) and _numeric(value):
-            out[name] = out[name] + value
-    for name in _names(effects.get("give")):
-        if name in out and _numeric(out[name]):
-            out[name] = out[name] + 1
-    for name in _names(effects.get("take")):
-        if name in out and _numeric(out[name]):
-            out[name] = max(0, out[name] - 1)
-    return out
-
-
-def condition_vars(condition: Any) -> set[str]:
-    """Every variable name a condition mentions."""
-    if not isinstance(condition, dict):
-        return set()
-    found: set[str] = set()
-    for key in ("all", "any"):
-        if isinstance(condition.get(key), list):
-            for c in condition[key]:
-                found |= condition_vars(c)
-    if isinstance(condition.get("var"), str):
-        found.add(condition["var"])
-    return found
-
-
-def effect_vars(effects: Any) -> set[str]:
-    """Every variable name an effects object mentions."""
-    if not isinstance(effects, dict):
-        return set()
-    found: set[str] = set()
-    for key in ("set", "add"):
-        found |= {n for n, _ in _items(effects.get(key))}
-    for key in ("give", "take"):
-        found |= set(_names(effects.get(key)))
-    return found
-
 
 def problems(
     start_passage_id: int | None,
     passages: Iterable[dict[str, Any]],
     choices: Iterable[dict[str, Any]],
-    variables: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
     """Static checks over one story's graph; the shape mirrors ``models.Problems``."""
     passages, choices = list(passages), list(choices)
     ids = [p["id"] for p in passages]
-    declared = {v["name"] for v in variables}
     is_ending = {p["id"]: bool(p.get("is_ending")) for p in passages}
     out_of: dict[int, list[dict[str, Any]]] = {pid: [] for pid in ids}
     for c in choices:
@@ -148,16 +51,10 @@ def problems(
                     reachable.add(nxt)
                     queue.append(nxt)
 
-    undeclared = [
-        {"choice_id": c["id"], "var": name}
-        for c in choices
-        for name in sorted((condition_vars(c["condition"]) | effect_vars(c["effects"])) - declared)
-    ]
     return {
         "no_start": start_passage_id not in out_of,
         "unreachable": [pid for pid in ids if pid not in reachable],
         "dangling": [c["id"] for c in choices if c["to_passage"] is None],
-        "undeclared": undeclared,
         "endings": [pid for pid in ids if is_ending[pid]],
         "unfinished": [pid for pid in ids if not out_of[pid] and not is_ending[pid]],
         "merge_candidates": merge_candidates(passages),
@@ -286,17 +183,15 @@ def random_playthroughs(
     start_passage_id: int | None,
     passages: Iterable[dict[str, Any]],
     choices: Iterable[dict[str, Any]],
-    variables: Iterable[dict[str, Any]],
     runs: int = 200,
     max_steps: int = 200,
     seed: int | None = None,
 ) -> dict[str, Any]:
-    """Walk the story ``runs`` times taking a random available choice each step,
-    through the same ``check``/``apply`` as the player. The shape mirrors
-    ``models.Playtest``: what was never visited, where readers got stuck (choices
-    exist but none is available in that state), which decided endings were
-    reached and how often versus which unfinished stubs a walk simply ran out
-    of story at, and how many walks the step cap cut short."""
+    """Walk the story ``runs`` times taking a random choice each step,
+    over the same graph the player walks. The shape mirrors ``models.Playtest``:
+    what was never visited, which decided endings were reached and how often
+    versus which unfinished stubs a walk simply ran out of story at, which
+    choices lead nowhere, and how many walks the step cap cut short."""
     passages, choices = list(passages), list(choices)
     ids = [p["id"] for p in passages]
     is_ending = {p["id"]: bool(p.get("is_ending")) for p in passages}
@@ -306,13 +201,11 @@ def random_playthroughs(
     seen_c: Counter[int] = Counter()
     endings: Counter[int] = Counter()
     unfinished: Counter[int] = Counter()
-    stuck: Counter[int] = Counter()
     dangling: Counter[int] = Counter()
     cut, lengths = 0, []
-    start_state = initial_state(variables)
     if start_passage_id in out or start_passage_id in ids:
         for _ in range(runs):
-            pid, state, steps = start_passage_id, dict(start_state), 0
+            pid, steps = start_passage_id, 0
             while True:
                 seen_p[pid] += 1
                 # is_ending is authoritative, same as _view: a decided ending has no
@@ -324,19 +217,14 @@ def random_playthroughs(
                 if not options:
                     unfinished[pid] += 1
                     break
-                open_ = [c for c in options if check(c["condition"], state)]
-                if not open_:
-                    stuck[pid] += 1
-                    break
                 if steps >= max_steps:
                     cut += 1
                     break
-                c = rng.choice(open_)
+                c = rng.choice(options)
                 seen_c[c["id"]] += 1
                 if c["to_passage"] is None:
                     dangling[c["id"]] += 1
                     break
-                state = apply(c["effects"], state)
                 pid, steps = c["to_passage"], steps + 1
             lengths.append(steps)
     return {
@@ -348,21 +236,93 @@ def random_playthroughs(
         "untaken": [c["id"] for c in choices if not seen_c[c["id"]]],
         "endings": dict(endings),
         "unfinished": dict(unfinished),
-        "stuck": dict(stuck),
         "dangling": dict(dangling),
     }
 
 
-def _items(d: Any) -> list[tuple[str, Any]]:
-    return [(k, v) for k, v in d.items() if isinstance(k, str)] if isinstance(d, dict) else []
+def shape(start_passage_id: int | None, passages: Iterable[dict[str, Any]], choices: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """How ragged the tree is, decision by decision, and whether the option order gives the reader a tell.
 
+    An option's *reach* is how many more decisions its longest route plays before an ending (0: it ends at once).
+    At each decision reached from the start, the option with the greatest reach is the trunk and the others are
+    side branches; a book where every side branch has reach 0 is a spine with one-passage exits, however its
+    ending depths spread. `trunk_slot` and `exit_slot` count which position (1-based, in the order the reader sees)
+    holds the trunk and the instant exits: a single slot that always wins is a pattern the reader can learn.
+    `always_pick` follows one slot from the start (the last option when a decision has fewer), for each slot the
+    widest decision has."""
+    passages, ordered = list(passages), sorted(choices, key=lambda c: (c.get("sort_order") or 0, c["id"]))
+    meta = {p["id"]: p.get("meta") or {} for p in passages}
+    title = {p["id"]: p["title"] for p in passages}
+    is_ending = {p["id"]: bool(p.get("is_ending")) for p in passages}
+    out = {pid: [c for c in cs if c["to_passage"] is not None] for pid, cs in _outgoing(ordered).items()}
+    reach: dict[int, int] = {}
 
-def _names(xs: Any) -> list[str]:
-    return [x for x in xs if isinstance(x, str)] if isinstance(xs, list) else []
+    def height(pid: int, stack: frozenset[int] = frozenset()) -> int:
+        """Decisions still to play on the longest route from `pid` (a cycle counts as ending where it closes)."""
+        if pid in reach:
+            return reach[pid]
+        nxt = [] if is_ending.get(pid) else [c["to_passage"] for c in out.get(pid, []) if c["to_passage"] not in stack]
+        h = 1 + max(height(t, stack | {pid}) for t in nxt) if nxt else 0
+        reach[pid] = h
+        return h
 
+    decisions, seen, queue = [], {start_passage_id}, deque([start_passage_id] if start_passage_id is not None else [])
+    while queue:
+        pid = queue.popleft()
+        opts = [] if is_ending.get(pid) else out.get(pid, [])
+        if len(opts) >= 2:
+            decisions.append((pid, [height(c["to_passage"]) for c in opts]))
+        for c in opts:
+            if c["to_passage"] not in seen:
+                seen.add(c["to_passage"])
+                queue.append(c["to_passage"])
 
-def _numeric(x: Any) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
+    side: Counter[int] = Counter()
+    trunk_slot: Counter[int] = Counter()
+    exit_slot: Counter[int] = Counter()
+    instant = 0
+    for _, hs in decisions:
+        top = max(hs)
+        if hs.count(top) == 1:
+            trunk_slot[hs.index(top) + 1] += 1
+        if top > 0:  # a last call where every option ends has no trunk, so no side branches either
+            side.update(h for i, h in enumerate(hs) if i != hs.index(top))
+        exits = [i + 1 for i, h in enumerate(hs) if h == 0]
+        exit_slot.update(exits)
+        instant += bool(exits) and top > 0
+
+    def walk(slot: int) -> dict[str, Any]:
+        pid, path = start_passage_id, set()
+        while pid is not None and pid not in path and not is_ending.get(pid) and out.get(pid):
+            path.add(pid)
+            opts = out[pid]
+            pid = opts[min(slot, len(opts)) - 1]["to_passage"]
+        return {"ending": title.get(pid), "verdict": meta.get(pid, {}).get("verdict"), "decisions": len(path)}
+
+    n = len(decisions)
+    warnings = []
+    if n >= 4 and instant / n > 0.6:
+        warnings.append(f"{instant} of {n} decisions are 'end now or go on': let some wrong turns run two or three decisions before they fail")
+    if n >= 4 and side and side[0] / sum(side.values()) > 0.8:
+        warnings.append("almost every side branch ends at once: the tree is a spine with exits, not ragged")
+    for counter, of, what in ((trunk_slot, sum(trunk_slot.values()), "the longest option"), (exit_slot, n, "an option that ends at once")):
+        if n >= 4 and counter and counter.most_common(1)[0][1] / of > 0.75:
+            slot, k = counter.most_common(1)[0]
+            warnings.append(f"slot {slot} holds {what} at {k} of {of} decisions: vary the order")
+    picks = {slot: walk(slot) for slot in range(1, max((len(hs) for _, hs in decisions), default=1) + 1)}
+    verdicts = Counter(m["verdict"] for pid, m in meta.items() if is_ending.get(pid) and m.get("verdict"))
+    for slot, w in picks.items():
+        if w["verdict"] and verdicts[w["verdict"]] * 3 <= sum(verdicts.values()):
+            warnings.append(f"always picking slot {slot} reaches '{w['ending']}' ({w['verdict']}, a rare outcome) without reading a word")
+    return {
+        "decisions": n,
+        "instant_exit_decisions": instant,
+        "side_branch_reach": dict(sorted(side.items())),
+        "trunk_slot": dict(sorted(trunk_slot.items())),
+        "exit_slot": dict(sorted(exit_slot.items())),
+        "always_pick": picks,
+        "warnings": warnings,
+    }
 
 
 # --- Row mutation helpers (used by agents and routes) -------------------------
@@ -432,11 +392,47 @@ def materialise(conn: sqlite3.Connection, story_id: int, p: dict[str, Any]) -> N
                                                      "pos_y": t.get("pos_y", 0), "provenance": "agent",
                                                      "is_ending": bool(t.get("is_ending"))})["id"]
         order = conn.execute("SELECT COALESCE(MAX(sort_order) + 1, 0) FROM choices WHERE from_passage = ?", (p["target_passage"],)).fetchone()[0]
-        insert_row(conn, "choices", story_id, {"from_passage": p["target_passage"], "to_passage": to, "text": pl["text"], "sort_order": order,
-                                            "condition": {}, "effects": {}})
-    elif kind == "new_variable":
-        insert_row(conn, "variables", story_id, {"name": pl["name"], "kind": pl["kind"], "default": pl.get("default")})
+        insert_row(conn, "choices", story_id, {"from_passage": p["target_passage"], "to_passage": to, "text": pl["text"], "sort_order": order})
     # 'note' materialises nothing; accepting it just files it away
 
     from . import db
     db.touch_story(conn, story_id)
+
+
+def weakest_subtrees(scores: dict[int, float], start: int | None, choices: list[dict[str, Any]], min_size: int = 3,
+                     top: int = 3, shrink: float = 2.0) -> list[dict[str, Any]]:
+    """The lowest-scoring subtrees by mean passage score. A subtree is a passage and everything reachable from it (the start's
+    is the whole book and is skipped); fewer than `min_size` scored passages is too small to be a rewrite. The mean is shrunk
+    toward the book's mean by `shrink` passages' worth, so a two-passage fluke cannot beat a large, steadily weak branch. Results
+    are disjoint, lowest first, and each lists its passages."""
+    if not scores:
+        return []
+    out = _outgoing(choices)
+    base = sum(scores.values()) / len(scores)
+    found = []
+    for root in scores:
+        if root == start:
+            continue
+        seen, todo = {root}, [root]
+        while todo:
+            for c in out.get(todo.pop(), []):
+                if c["to_passage"] is not None and c["to_passage"] not in seen:
+                    seen.add(c["to_passage"])
+                    todo.append(c["to_passage"])
+        members = sorted(p for p in seen if p in scores)
+        if len(members) < min_size:
+            continue
+        total = sum(scores[p] for p in members)
+        found.append({"root": root, "size": len(members), "mean": total / len(members),
+                      "adjusted": (total + shrink * base) / (len(members) + shrink), "passages": members})
+    found.sort(key=lambda f: f["adjusted"])
+    picked: list[dict[str, Any]] = []
+    used: set[int] = set()
+    for f in found:
+        if used & set(f["passages"]):
+            continue
+        picked.append(f)
+        used |= set(f["passages"])
+        if len(picked) >= top:
+            break
+    return picked

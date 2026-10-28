@@ -73,7 +73,6 @@ function summary(q: Proposal): string {
     case 'new_passage': return `New passage “${pl.title}”`
     case 'new_choice': return `Choice “${pl.text}” → ${pl.new_target ? `new “${pl.new_target.title}”` : 'existing passage'}`
     case 'edit_choice': return `Choice text: ${pl.text}`
-    case 'new_variable': return `Variable ${pl.name} (${pl.kind})`
     default: return pl.issues?.length ? `${pl.issues.length} canon issue${pl.issues.length > 1 ? 's' : ''}` : excerpt(pl.text) || 'note'
   }
 }
@@ -189,7 +188,6 @@ export function ProposalPanel({ proposal: q, store, onSelect }: { proposal: Prop
           </p>
         </>
       )}
-      {q.kind === 'new_variable' && <div className="proposal-text">{pl.name} · {pl.kind} · default {JSON.stringify(pl.default)}</div>}
 
       <div className="row" style={{ marginTop: '0.75rem' }}>
         <button disabled={!passage || !!store.busy[passage.id]} onClick={regenerate}>Regenerate</button>

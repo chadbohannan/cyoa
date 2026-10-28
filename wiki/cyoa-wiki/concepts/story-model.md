@@ -1,6 +1,6 @@
 # Story Model
 
-A story is a directed graph of **passages** joined by **choices**, with per-story **variables** that choices can test and mutate. This is the shape the 2026-09-19 bootstrap interview (`20260919-bootstrap-interview.md`) asked for: plain branching was explicitly not enough — the owner wants variables/flags and inventory/stats, Twine-style — and the model is expected to keep evolving as the tooling does. Everything here describes the schema in `backend/src/cyoa/db.py` as of 2026-09-19; the [backend](../systems/backend.md) owns the tables and the [frontend](../systems/frontend.md) renders them.
+A story is a directed graph of **passages** joined by **choices**. (It once also had per-story **variables** that choices could test and mutate; those were removed on 2026-10-07, see [Stateless Story](stateless-story.md).) This is the shape the 2026-09-19 bootstrap interview (`20260919-bootstrap-interview.md`) asked for: plain branching was explicitly not enough — the owner wants variables/flags and inventory/stats, Twine-style — and the model is expected to keep evolving as the tooling does. Everything here describes the schema in `backend/src/cyoa/db.py` as of 2026-09-19; the [backend](../systems/backend.md) owns the tables and the [frontend](../systems/frontend.md) renders them.
 
 ## Passages and choices
 
@@ -8,11 +8,9 @@ A passage is a titled block of prose (`title`, `body`) belonging to one story. T
 
 `to_passage` is nullable and set to null when its target is deleted. A dangling choice is kept rather than cascade-deleted so an author sees a broken link to repair instead of silently losing a choice's text and effects.
 
-## Variables, conditions, effects
+## Variables, conditions, effects (removed)
 
-The `variables` table declares the state a story tracks: each row has a `name`, a `kind` of `flag`, `stat`, or `item`, and a JSON `default`. Flags are booleans, stats are numbers, items are counts — the three kinds the interview named, kept as one table rather than three because they differ only in the type of their value.
-
-Choices carry two JSON blobs, `condition` and `effects`, both defaulting to `{}`. A condition gates whether the choice is offered; an effect mutates state when the choice is taken. Their vocabulary — clauses `{"var", "op", "value"}` under `all`/`any`, effects `set`/`add`/`give`/`take` — is defined in [the webapp UI](webapp-ui.md) and interpreted in exactly one place, `engine.py` in the [backend](../systems/backend.md), since 2026-09-20. Storing them as JSON text is the concrete mechanism for "the structure evolves as the tool evolves": the vocabulary can grow without a schema change. The cost is that SQLite cannot query inside them, which is acceptable because the only read path loads a whole story at once.
+Until 2026-10-07 a `variables` table declared per-story state (`flag`, `stat`, `item`) and choices carried JSON `condition` and `effects`, interpreted in one place, `engine.py`. All of it is gone: a reader's state is the route they took, and a fact that differs between timelines lives in separate branches. [Stateless Story](stateless-story.md) gives the reasoning and what replaced it.
 
 ## The world layer
 

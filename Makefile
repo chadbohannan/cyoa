@@ -1,4 +1,4 @@
-.PHONY: help install backend frontend serve test test-backend test-frontend eval lint-wiki
+.PHONY: help install backend frontend mcp serve test test-backend test-frontend eval lint-wiki
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -20,6 +20,12 @@ backend: ## run FastAPI with reload on :8765 (CYOA_PORT); model backend per CYOA
 
 frontend: ## run Vite dev server on :5173 (proxies /api to :8765, CYOA_API)
 	cd frontend && npm run dev
+
+# The stdio MCP server (concepts/mcp-authoring.md) is launched by a harness, not run by hand. Its config entry is
+#   command: uv   args: run --project <abs path>/backend cyoa-mcp
+#   env: CYOA_DB=<abs path>/backend/cyoa.db  CYOA_MCP_LABEL=<harness>/<model>  [CYOA_SUMMARY_URL=http://0.0.0.0:8080/v1]
+mcp: ## run the MCP server on stdio against CYOA_DB (default backend/cyoa.db) for a quick manual check
+	cd backend && CYOA_DB=$${CYOA_DB:-$(CURDIR)/backend/cyoa.db} uv run cyoa-mcp
 
 serve: ## build the frontend and run the backend serving it, single process on 0.0.0.0:8765 (CYOA_HOST)
 	cd frontend && npm run build

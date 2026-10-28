@@ -5,7 +5,7 @@ Each verb is the same explicit four-node graph — gather_context → generate �
 parse_validate → propose — over a story neighbourhood, with a retry edge from
 parse_validate back to generate. The model returns structured output for a
 verb-specific Pydantic schema; parse_validate does the checks a schema cannot
-(titles resolve, variables exist, text is non-empty) and feeds the error back
+(titles resolve, text is non-empty) and feeds the error back
 into the next attempt. Only `propose` writes, and it writes proposals, never
 passages: the human accepts them in the inspector (see main.py).
 
@@ -398,12 +398,11 @@ class VerbState(TypedDict, total=False):
 
 
 def gather_context(state: VerbState) -> VerbState:
-    """Read the passage's neighbourhood: story, variables, in/out links, lore."""
+    """Read the passage's neighbourhood: story, in/out links, lore."""
     with db.transaction() as conn:
         story = dict(conn.execute("SELECT * FROM stories WHERE id = ?", (state["story_id"],)).fetchone())
         passage = dict(conn.execute("SELECT * FROM passages WHERE id = ?", (state["passage_id"],)).fetchone())
         passage["meta"] = json.loads(passage["meta"])
-        variables = [dict(r) for r in conn.execute("SELECT name, kind, \"default\" FROM variables WHERE story_id = ? ORDER BY name", (story["id"],))]
         titles = {r["id"]: r["title"] for r in conn.execute("SELECT id, title FROM passages WHERE story_id = ? ORDER BY id", (story["id"],))}
         inbound = [
             dict(r)
@@ -427,7 +426,7 @@ def gather_context(state: VerbState) -> VerbState:
         if state["params"].get("choice_id") is not None:
             row = conn.execute("SELECT * FROM choices WHERE id = ?", (state["params"]["choice_id"],)).fetchone()
             choice = dict(row) if row else None
-    return {"context": {"story": story, "passage": passage, "variables": variables, "titles": titles,
+    return {"context": {"story": story, "passage": passage, "titles": titles,
                         "spine": spine, "inbound": inbound, "outgoing": outgoing, "lore": lore, "choice": choice},
             "attempts": 0, "batch": uuid.uuid4().hex}
 
@@ -454,8 +453,6 @@ def _spine(conn: sqlite3.Connection, start: int | None, passage_id: int) -> list
 def render_context(ctx: dict[str, Any], titles: bool = True) -> str:
     s, p = ctx["story"], ctx["passage"]
     lines = [f"STORY: {s['title']}", s["description"] or "(no description)", ""]
-    if ctx["variables"]:
-        lines += ["VARIABLES: " + ", ".join(f"{v['name']} ({v['kind']}, default {v['default']})" for v in ctx["variables"]), ""]
     if ctx["lore"]:
         lines += ["WORLD:"] + [f"- [{l['kind']}] {l['name']}: {l['body']}" for l in ctx["lore"]] + [""]
     where = ", ".join(x for x in [

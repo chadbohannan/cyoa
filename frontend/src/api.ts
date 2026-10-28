@@ -44,22 +44,10 @@ export interface Choice {
   to_passage: number | null
   text: string
   sort_order: number
-  condition: Record<string, unknown>
-  effects: Record<string, unknown>
 }
 
-export type VariableKind = 'flag' | 'stat' | 'item'
-
-export interface Variable {
-  id: number
-  story_id: number
-  name: string
-  kind: VariableKind
-  default: unknown
-}
-
-export type LoreKind = 'character' | 'place' | 'faction' | 'rule'
-export const LORE_KINDS: LoreKind[] = ['character', 'place', 'faction', 'rule']
+export type LoreKind = 'character' | 'place' | 'faction' | 'rule' | 'fact'
+export const LORE_KINDS: LoreKind[] = ['character', 'place', 'faction', 'rule', 'fact']
 
 export interface Lore {
   id: number
@@ -72,7 +60,7 @@ export interface Lore {
 
 // --- proposals (agent output; only Accept writes to the tables above) ---------
 
-export type ProposalKind = 'new_passage' | 'new_choice' | 'edit_passage' | 'edit_choice' | 'new_variable' | 'note'
+export type ProposalKind = 'new_passage' | 'new_choice' | 'edit_passage' | 'edit_choice' | 'note'
 export type AssistVerb = 'draft_body' | 'suggest_choices' | 'draft_target' | 'rewrite' | 'suggest_next'
 
 // payload by kind mirrors the docstring on models.Proposal
@@ -95,9 +83,6 @@ export interface Proposal {
     new_target?: NewTarget | null
     pos_x?: number
     pos_y?: number
-    name?: string
-    kind?: VariableKind
-    default?: unknown
     issues?: { claim: string; conflicts_with: string; severity: 'minor' | 'major' }[]
   }
   status: 'pending' | 'accepted' | 'rejected'
@@ -320,26 +305,21 @@ export interface StoryGraph {
   story: Story
   passages: Passage[]
   choices: Choice[]
-  variables: Variable[]
   lore: Lore[]
   proposals: Proposal[] // pending only
 }
 
 // --- play & validation -------------------------------------------------------
 
-export type PlayState = Record<string, unknown>
-
 export interface PlayView {
   passage: Passage
   choices: Choice[]
-  state: PlayState
 }
 
 export interface Problems {
   no_start: boolean
   unreachable: number[]
   dangling: number[]
-  undeclared: { choice_id: number; var: string }[]
   endings: number[] // is_ending passages: decided, terminal
   unfinished: number[] // no outgoing choices, but not decided as an ending
   merge_candidates: MergeCandidate[]
@@ -382,14 +362,12 @@ export interface Playtest {
   untaken: number[]
   endings: Record<string, number> // landed on an is_ending passage
   unfinished: Record<string, number> // landed on a stub: no choices, not decided as an ending
-  stuck: Record<string, number>
   dangling: Record<string, number>
 }
 
 type Omitted = 'id' | 'story_id'
 export type PassageInput = Partial<Omit<Passage, Omitted>> & { title: string }
 export type ChoiceInput = Partial<Omit<Choice, Omitted>> & { from_passage: number; text: string }
-export type VariableInput = Omit<Variable, Omitted>
 export type LoreInput = Partial<Omit<Lore, Omitted>> & { kind: LoreKind; name: string }
 
 // Machine settings (models.SettingsInfo / SettingsPatch): the default model and the number of model calls in flight.
@@ -455,7 +433,6 @@ export const api = {
     post<{ passage_ids: number[] }>(`/stories/${storyId}/layout`, { positions }),
   promote: (storyId: number, body: PromoteRequest) => post<{ passage_ids: number[] }>(`/stories/${storyId}/promote`, body),
   choices: child<Choice, ChoiceInput>('choices'),
-  variables: child<Variable, VariableInput>('variables'),
   lore: child<Lore, LoreInput>('lore'),
 
   problems: (storyId: number) => request<Problems>(`/stories/${storyId}/problems`),
@@ -466,8 +443,8 @@ export const api = {
   play: {
     start: (storyId: number, passageId: number | null = null) =>
       post<PlayView>(`/stories/${storyId}/play/start`, { passage_id: passageId }),
-    choose: (storyId: number, choiceId: number, state: PlayState) =>
-      post<PlayView>(`/stories/${storyId}/play/choose`, { choice_id: choiceId, state }),
+    choose: (storyId: number, choiceId: number) =>
+      post<PlayView>(`/stories/${storyId}/play/choose`, { choice_id: choiceId }),
   },
 
   assist: (storyId: number, passageId: number, body: AssistRequest) =>

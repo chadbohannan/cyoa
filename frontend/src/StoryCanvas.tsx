@@ -281,7 +281,6 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
     const matches = (p: { title: string; body: string }) => !q || p.title.toLowerCase().includes(q) || p.body.toLowerCase().includes(q)
     const unreachable = new Set(problems?.unreachable ?? [])
     const dangling = new Set(problems?.dangling ?? [])
-    const undeclared = new Set(problems?.undeclared.map((u) => u.choice_id) ?? [])
     const mergeWith = new Map<number, number>()
     for (const m of problems?.merge_candidates ?? []) for (const id of m.passage_ids) mergeWith.set(id, m.passage_ids.length - 1)
     const { hidden, summaries } = collapseSubtrees(graph.passages, graph.choices, graph.story.start_passage_id, collapsed)
@@ -313,7 +312,6 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         source: String(c.from_passage),
         target: String(c.to_passage),
         label: c.text,
-        className: undeclared.has(c.id) ? 'problem' : undefined,
         markerEnd: { type: MarkerType.ArrowClosed },
       }))
     // what auto layout reads: visible passages, their choices in order, then ghosts under their targets
@@ -471,7 +469,7 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
   }
   const allReviewed = scope.length > 1 && scope.every((id) => graph?.passages.find((p) => p.id === id)?.reviewed)
   const problemCount = problems
-    ? problems.unreachable.length + problems.dangling.length + problems.undeclared.length + (problems.no_start ? 1 : 0)
+    ? problems.unreachable.length + problems.dangling.length + (problems.no_start ? 1 : 0)
     : 0
 
   return (
@@ -507,7 +505,7 @@ function Canvas({ store, selection, onSelect, onPlayFrom, onExpandFrom }: Props)
         {problems && (
           <span className="muted small">
             {problems.no_start && <span className="error">no start · </span>}
-            {problems.unreachable.length} unreachable · {problems.dangling.length} dangling · {problems.undeclared.length} undeclared ·{' '}
+            {problems.unreachable.length} unreachable · {problems.dangling.length} dangling ·{' '}
             {problems.endings.length} ending{problems.endings.length === 1 ? '' : 's'} · {problems.unfinished.length} unfinished
             {problems.merge_candidates.length > 0 && ` · ${problems.merge_candidates.length} merge group${problems.merge_candidates.length === 1 ? '' : 's'}`}
           </span>

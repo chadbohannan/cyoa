@@ -31,6 +31,3 @@ ChoiceScript's stat-driven `*choice`/`*set`/`*if` is the commercial standard, bu
 | `passages.is_start` | `StoryData.start` | `startnode` | first line / `-> start` |
 | `passages.pos_x/pos_y` | `{"position":"x,y"}` | `position.{x,y}` | (none) |
 | `choices.text` / `to_passage` | `[[Text->Target]]` | `links[].{name,link}` | `* [Text] -> target` |
-| `choices.condition` | story-format macro | (lost) | `* {cond} ...` |
-| `choices.effects` | story-format macro | (lost) | `~ var = ...` after choice |
-| `variables` | story-format `<<set>>` in a startup passage | (lost) | `VAR name = default` |

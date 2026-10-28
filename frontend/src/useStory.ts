@@ -16,8 +16,6 @@ import {
   type PromoteRequest,
   type Story,
   type StoryGraph,
-  type Variable,
-  type VariableInput,
 } from './api'
 import { guardWith } from './store'
 import { useRuns } from './useRuns'
@@ -131,21 +129,6 @@ export function useStory(storyId: number) {
     patchGraph((g) => ({ ...g, choices: rows.reduce(upsert, g.choices) }))
   })
 
-  const createVariable = guard(async (body: VariableInput) => {
-    const v = await api.variables.create(storyId, body)
-    patchGraph((g) => ({ ...g, variables: upsert(g.variables, v) }))
-    return v
-  })
-  const updateVariable = guard(async (id: number, body: Partial<VariableInput>) => {
-    const v = await api.variables.update(storyId, id, body)
-    patchGraph((g) => ({ ...g, variables: upsert(g.variables, v) }))
-    return v
-  })
-  const deleteVariable = guard(async (id: number) => {
-    await api.variables.remove(storyId, id)
-    patchGraph((g) => ({ ...g, variables: without(g.variables, id) }))
-  })
-
   const createLore = guard(async (body: LoreInput) => {
     const l = await api.lore.create(storyId, body)
     patchGraph((g) => ({ ...g, lore: upsert(g.lore, l) }))
@@ -225,9 +208,6 @@ export function useStory(storyId: number) {
     updateChoice,
     deleteChoice,
     reorderChoices,
-    createVariable,
-    updateVariable,
-    deleteVariable,
     createLore,
     updateLore,
     deleteLore,
@@ -235,4 +215,4 @@ export function useStory(storyId: number) {
 }
 
 export type StoryStore = ReturnType<typeof useStory>
-export type { Choice, Lore, Passage, Variable }
+export type { Choice, Lore, Passage }

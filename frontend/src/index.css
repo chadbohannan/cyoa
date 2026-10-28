@@ -65,9 +65,6 @@ main { flex: 1; min-height: 0; }
 .kind { font-weight: 600; text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.08em; color: var(--muted); }
 .choice-list { list-style: none; padding: 0; margin: 0; }
 .choice-list li { display: flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0; border-bottom: 1px solid var(--line); }
-table.vars { width: 100%; border-collapse: collapse; }
-table.vars th { text-align: left; font-weight: 500; color: var(--muted); font-size: 0.8em; }
-table.vars td { padding: 0.15rem 0.15rem; }
 details > summary { cursor: pointer; color: var(--muted); margin: 0.5rem 0; }
 
 /* passage cards on the map */
@@ -132,14 +129,6 @@ details > summary { cursor: pointer; color: var(--muted); margin: 0.5rem 0; }
 .passage-card-problem { margin-top: 0.25rem; color: var(--danger); font-size: 0.9em; }
 .react-flow__edge.problem .react-flow__edge-path { stroke: var(--danger); stroke-dasharray: 4 3; }
 
-/* clause rows */
-.clauses .clause { margin: 0.25rem 0; }
-.clauses .row { flex-wrap: wrap; }
-.clauses .clause select, .clauses .clause input { padding: 0.2rem 0.3rem; }
-.clauses select.narrow, .clauses input.narrow { width: 5rem; flex: none; }
-.clauses select.error { border-color: var(--danger); }
-.clauses .row > .link { margin-left: auto; }
-.clauses .raw { flex-basis: 100%; }
 
 /* player */
 .player { height: 100%; overflow-y: auto; }

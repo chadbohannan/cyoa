@@ -18,7 +18,7 @@ uv run --project backend python scripts/eval_storylines.py judge eval-out/<stamp
 - `<n>-<slug>.json`: the same paths as data, which is what `judge` reads.
 - `backend.log`: output from the private backend.
 
-**Judging.** With `--judge`, each path is sent to the model at `CYOA_OPENAI_URL` with a rubric: contradictions, passages that ignore their choice, unintroduced references, and shifts of person or tense. The model answers `{consistent, readability, issues}`, and the verdicts are appended to the story report. It is the same model grading its own output, so treat a pass as weak evidence. On the first run (2026-09-28) it passed a slip a human reader catches at once, so read the reports yourself before trusting it.
+**Judging.** With `--judge`, each path is sent to the model at `CYOA_OPENAI_URL` with a rubric: contradictions, passages that ignore their choice, unintroduced references, and shifts of person or tense. The model answers `{consistent, readability, issues}`, and the verdicts are appended to the story report. It is the same model grading its own output, so treat a pass as weak evidence. A typed scorer would remove the parsing and self-grading problems; see [Story Quality Scoring](../concepts/story-quality-scoring.md). On the first run (2026-09-28) it passed a slip a human reader catches at once, so read the reports yourself before trusting it.
 
 **Cost.** Against Qwen 3.8 27B with the Bonsai-2 ternary quantization on llama-server, each model call takes 10–20 s, and one passage costs one call plus a share of its parent's choices call. A 20-passage story took about 10–20 minutes. Judging takes roughly another 30–100 s per storyline.
 

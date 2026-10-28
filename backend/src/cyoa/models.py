@@ -10,8 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-LoreKind = Literal["character", "place", "faction", "rule"]
-VariableKind = Literal["flag", "stat", "item"]
+LoreKind = Literal["character", "place", "faction", "rule", "fact"]
 Provenance = Literal["human", "agent"]
 
 
@@ -74,36 +73,15 @@ class ChoiceCreate(BaseModel):
     to_passage: int | None = None
     text: str
     sort_order: int = 0
-    condition: dict[str, Any] = Field(default_factory=dict)
-    effects: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChoicePatch(BaseModel):
     to_passage: int | None = None
     text: str | None = None
     sort_order: int | None = None
-    condition: dict[str, Any] | None = None
-    effects: dict[str, Any] | None = None
 
 
 class Choice(ChoiceCreate):
-    id: int
-    story_id: int
-
-
-class VariableCreate(BaseModel):
-    name: str
-    kind: VariableKind
-    default: Any = None
-
-
-class VariablePatch(BaseModel):
-    name: str | None = None
-    kind: VariableKind | None = None
-    default: Any = None
-
-
-class Variable(VariableCreate):
     id: int
     story_id: int
 
@@ -127,7 +105,7 @@ class Lore(LoreCreate):
     story_id: int
 
 
-ProposalKind = Literal["new_passage", "new_choice", "edit_passage", "edit_choice", "new_variable", "note"]
+ProposalKind = Literal["new_passage", "new_choice", "edit_passage", "edit_choice", "note"]
 ProposalStatus = Literal["pending", "accepted", "rejected"]
 AssistVerb = Literal["draft_body", "suggest_choices", "draft_target", "rewrite", "suggest_next"]
 
@@ -139,7 +117,6 @@ class Proposal(BaseModel):
     new_choice    {text, to_passage | null, new_target: {title, body?, pos_x?, pos_y?} | null}; target_passage is the source
     edit_passage  {body?} and/or {is_ending?}; target_passage is the passage being edited
     edit_choice   {text}; target_choice
-    new_variable  {name, kind, default}
     note          {text, issues?: [{claim, conflicts_with, severity}]}; optional target_passage
     """
 
@@ -364,15 +341,11 @@ class StoryGraph(BaseModel):
     story: Story
     passages: list[Passage]
     choices: list[Choice]
-    variables: list[Variable]
     lore: list[Lore]
     proposals: list[Proposal]  # pending only
 
 
 # --- play & validation ---------------------------------------------------------
-
-State = dict[str, Any]
-
 
 class PlayStart(BaseModel):
     """Begin a playthrough at the story's start, or at ``passage_id`` ("play from here")."""
@@ -382,20 +355,13 @@ class PlayStart(BaseModel):
 
 class PlayChoose(BaseModel):
     choice_id: int
-    state: State
 
 
 class PlayView(BaseModel):
-    """One step of a playthrough: the passage, the choices open in ``state``, and ``state``."""
+    """One step of a playthrough: the passage and the choices out of it."""
 
     passage: Passage
     choices: list[Choice]
-    state: State
-
-
-class UndeclaredVar(BaseModel):
-    choice_id: int
-    var: str
 
 
 class Problems(BaseModel):
@@ -409,7 +375,6 @@ class Problems(BaseModel):
     no_start: bool
     unreachable: list[int]
     dangling: list[int]
-    undeclared: list[UndeclaredVar]
     endings: list[int]
     unfinished: list[int]
     merge_candidates: list[MergeCandidate]
@@ -492,7 +457,6 @@ class Playtest(BaseModel):
     untaken: list[int]
     endings: dict[int, int]
     unfinished: dict[int, int]
-    stuck: dict[int, int]
     dangling: dict[int, int]
 
 

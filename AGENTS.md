@@ -1,6 +1,6 @@
 # CYOA — Agent Guidelines
 
-CYOA is a set of tools for composing choose-your-own-adventure interactive books: a branching story graph (passages, choices, flags/stats) stored in SQLite, edited in a React Flow graph editor, with a local Ollama model assisting authoring. It is a prototype, not production software. Scaffolded 2026-09-19.
+CYOA is a set of tools for composing choose-your-own-adventure interactive books: a branching story graph (passages and choices) stored in SQLite, edited in a React Flow graph editor, with a local Ollama model assisting authoring. It is a prototype, not production software. Scaffolded 2026-09-19.
 
 ## The Wiki is the Primary Knowledge Base
 
@@ -42,15 +42,17 @@ When updating wiki pages, maintain cross-references. Add links to the index for 
 backend/                 # uv project (Python 3.12), FastAPI
 ├── src/cyoa/
 │   ├── main.py          # app, /api routes, `cyoa` console script (uvicorn on :8765)
-│   ├── db.py            # SQLite schema (stories, passages, choices, variables, lore, proposals, agent_runs, pacing, audits)
+│   ├── db.py            # SQLite schema (stories, passages, choices, lore, proposals, agent_runs, pacing, audits)
 │   ├── models.py        # Pydantic shapes mirroring the tables
-│   ├── engine.py        # condition/effects evaluator, play state, problems checks, subtree, merge candidates, random playtest
-│   ├── twee.py          # Twee 3 / SugarCube export
+│   ├── engine.py        # graph analysis: problems checks, subtree, prune, merge candidates, random playtest
+│   ├── twee.py          # plain Twee 3 export
 │   ├── agents.py        # LangGraph workflows: verbs, interview, canon_check, expand_frontier (paced by the story's act plan); the model-call gate; RunHandle
 │   ├── runs.py          # background runs: threads, SQLite checkpoints (cyoa-agent.db), SSE log, resume/cancel
+│   ├── mcp_server.py    # stdio MCP server: the story tools for a single long-running agent in an outside harness (branch cyoa-book-mcp)
+│   ├── summarize.py     # automatic cached "story so far" per route for get_passage, from a local llama-server (CYOA_SUMMARY_URL)
 │   ├── prompts.py       # prompt roles: defaults, overrides in backend/prompts.json (committed), validate
 │   └── llm.py           # model backend: CYOA_LLM=ollama|openai (llama-server :8080/v1 by default via make)
-└── tests/               # test_api.py (routes), test_engine.py (evaluator), test_agents.py (verbs, interview, runs; stubbed model)
+└── tests/               # test_api.py (routes), test_engine.py (graph analysis), test_agents.py (verbs, interview, runs; stubbed model), test_mcp.py (MCP tools, summaries)
 frontend/                # Vite + React + TypeScript
 └── src/
     ├── api.ts           # typed gateway to /api (proxied to the backend in dev)
@@ -62,8 +64,7 @@ frontend/                # Vite + React + TypeScript
     ├── App.tsx          # hash router: Library or StoryShell (Map / Lore / Play / Agents tabs)
     ├── Library.tsx      # story cards
     ├── StoryCanvas.tsx  # editable React Flow map (auto layout, activity highlight, subtree collapse)
-    ├── Inspector.tsx    # passage / choice / story panels, variables table
-    ├── clauses.tsx      # clause-row editors for condition / effects
+    ├── Inspector.tsx    # passage / choice / story panels
     ├── Player.tsx       # reader view: play/start, play/choose, debug drawer, random-playtest panel
     ├── Proposals.tsx    # assist toolbar, proposal list, Accept/Reject panel
     ├── layout.ts        # map auto layout: tidy tree from the start in choice order (d3-hierarchy)
@@ -83,7 +84,7 @@ Makefile                 # install / backend / frontend / test / lint-wiki
 1. **Understand before implementing**: read the wiki's system pages and `concepts/story-model.md`
 2. **Run**: `make backend` and `make frontend` (see `wiki/cyoa-wiki/runbooks/dev-loop.md`)
 3. **Test**: `make test` — pytest for the backend, `tsc -b` + build for the frontend
-4. **Schema changes**: there are no migrations; edit `db.py` and delete `cyoa.db`. Prefer extending the JSON `condition`/`effects` vocabulary over adding columns while the model is moving
+4. **Schema changes**: there are no migrations; edit `db.py` and delete `cyoa.db`. A story has no variables, conditions or effects (wiki: `concepts/stateless-story.md`): branching is the graph, and a fact that differs between timelines lives in separate branches
 5. **Keep `api.ts` and `models.py` in step** — they mirror each other field for field
 
 ## Wiki Maintenance Triggers

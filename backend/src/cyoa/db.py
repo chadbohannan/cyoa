@@ -2,9 +2,10 @@
 
 The story graph lives in a single SQLite file (CYOA_DB, default ./cyoa.db).
 Schema is created on startup; there is no migration tooling yet — while the
-model is still moving, delete the file to reset. Conditions and effects on
-choices are stored as JSON text so their shape can evolve without a schema
-change.
+model is still moving, delete the file to reset. A story has no variables,
+conditions or effects (concepts/stateless-story.md): a database created before
+2026-10-07 still carries the unused `variables` table and `choices.condition` /
+`effects` columns, which nothing reads or writes.
 """
 
 from __future__ import annotations
@@ -56,28 +57,14 @@ CREATE TABLE IF NOT EXISTS choices (
     from_passage INTEGER NOT NULL REFERENCES passages(id) ON DELETE CASCADE,
     to_passage   INTEGER REFERENCES passages(id) ON DELETE SET NULL,
     text         TEXT NOT NULL,
-    sort_order   INTEGER NOT NULL DEFAULT 0,
-    -- JSON: {"var": "brave", "op": "==", "value": true} | {"all": [...]} | {"any": [...]}
-    condition    TEXT NOT NULL DEFAULT '{}',
-    -- JSON: {"set": {...}, "add": {...}, "give": [...], "take": [...]}
-    effects      TEXT NOT NULL DEFAULT '{}'
-);
-
-CREATE TABLE IF NOT EXISTS variables (
-    id        INTEGER PRIMARY KEY,
-    story_id  INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-    name      TEXT NOT NULL,
-    kind      TEXT NOT NULL CHECK (kind IN ('flag', 'stat', 'item')),
-    -- JSON default value: false for flags, a number for stats, a count for items
-    "default" TEXT NOT NULL DEFAULT 'null',
-    UNIQUE (story_id, name)
+    sort_order   INTEGER NOT NULL DEFAULT 0
 );
 
 -- the story bible: what is true of the world regardless of branch
 CREATE TABLE IF NOT EXISTS lore (
     id       INTEGER PRIMARY KEY,
     story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-    kind     TEXT NOT NULL CHECK (kind IN ('character', 'place', 'faction', 'rule')),
+    kind     TEXT NOT NULL CHECK (kind IN ('character', 'place', 'faction', 'rule', 'fact')),
     name     TEXT NOT NULL,
     body     TEXT NOT NULL DEFAULT '',
     reviewed INTEGER NOT NULL DEFAULT 0
@@ -187,6 +174,65 @@ CREATE TABLE IF NOT EXISTS audits (
     draft       TEXT NOT NULL DEFAULT '{}',  -- JSON {title, body}: what was audited this round
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- rolling "story so far" summaries for the MCP server (summarize.py). Content-addressed: `key` hashes the
+-- route prefix (passage ids, titles, bodies and the choice text taken), so editing any passage on a route
+-- makes its old summaries unreachable instead of needing invalidation. A cache, safe to empty.
+CREATE TABLE IF NOT EXISTS embeddings (
+    key        TEXT PRIMARY KEY,   -- sha1 of model + text
+    model      TEXT NOT NULL,
+    vec        BLOB NOT NULL,      -- float32 array
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    key        TEXT PRIMARY KEY,
+    story_id   INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    passage_id INTEGER NOT NULL,   -- the last passage the summary covers
+    depth      INTEGER NOT NULL,   -- passages covered
+    text       TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- the local model's canon check of one passage on one route (canon.py). Content-addressed like summaries: `key`
+-- hashes the prompt, model, canon text, route summary and passage, so any edit makes a stale row unreachable.
+CREATE TABLE IF NOT EXISTS canon_checks (
+    key        TEXT PRIMARY KEY,
+    story_id   INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    passage_id INTEGER NOT NULL,
+    issues     TEXT NOT NULL,     -- JSON list of {quote, conflicts_with, why}
+    model      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- every earlier version of a lore entry, written by the MCP lore tools before they change or delete it
+CREATE TABLE IF NOT EXISTS lore_revisions (
+    id       INTEGER PRIMARY KEY,
+    story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    lore_id  INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    name     TEXT NOT NULL,
+    body     TEXT NOT NULL,
+    action   TEXT NOT NULL,   -- 'update' | 'delete': what replaced this version
+    label    TEXT NOT NULL DEFAULT '',
+    at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS lore_revisions_lore ON lore_revisions(lore_id, id);
+
+-- every MCP tool call, so runs by different harnesses/models can be compared afterwards.
+-- `label` is CYOA_MCP_LABEL of the server process (e.g. "claude-code/opus"), set by whoever launches it.
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id       INTEGER PRIMARY KEY,
+    story_id INTEGER REFERENCES stories(id) ON DELETE CASCADE,
+    label    TEXT NOT NULL DEFAULT '',
+    tool     TEXT NOT NULL,
+    args     TEXT NOT NULL DEFAULT '{}',
+    ok       INTEGER NOT NULL,
+    error    TEXT,
+    ms       INTEGER NOT NULL,
+    at       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_calls_story ON tool_calls(story_id, id);
 """
 
 

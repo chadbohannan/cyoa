@@ -1,10 +1,8 @@
 // Right-hand panel showing whatever is selected on the map. Autosaves via the
-// field components; the story panel (title, description, variables) shows when
+// field components; the story panel (title, IFID, export) shows when
 // nothing is selected.
 
-import { useState } from 'react'
-import { api, type Choice, type Passage, type Variable, type VariableKind } from './api'
-import { ConditionEditor, EffectsEditor } from './clauses'
+import { api, type Choice, type Passage } from './api'
 import { NumberField, TextArea, TextField } from './fields'
 import { AssistToolbar, ProposalList, ProposalPanel } from './Proposals'
 import { confirmDelete, confirmPrune } from './prune'
@@ -182,31 +180,14 @@ function ChoicePanel({ choice: c, store, onSelect }: { choice: Choice; store: St
           <span className="muted">{store.busy[c.from_passage] === 'draft_target' ? 'drafting…' : 'ask the model to write the destination'}</span>
         </p>
       )}
-      <div className="panel-head"><span className="kind">Condition</span></div>
-      <ConditionEditor choice={c} variables={graph.variables} onSave={(condition) => save({ condition })} />
-      <div className="panel-head"><span className="kind">Effects</span></div>
-      <EffectsEditor choice={c} variables={graph.variables} onSave={(effects) => save({ effects })} />
-      {graph.variables.length === 0 && <p className="muted small">Declare variables on the story panel to use conditions and effects.</p>}
     </div>
   )
 }
 
 // --- story -------------------------------------------------------------------
 
-const KINDS: VariableKind[] = ['flag', 'stat', 'item']
-const defaultFor = (kind: VariableKind) => (kind === 'flag' ? false : 0)
-
 function StoryPanel({ store }: { store: StoryStore }) {
-  const { story, variables, passages } = store.graph!
-  const [name, setName] = useState('')
-  const [kind, setKind] = useState<VariableKind>('flag')
-
-  async function add() {
-    const n = name.trim()
-    if (!n) return
-    const v = await store.createVariable({ name: n, kind, default: defaultFor(kind) })
-    if (v) setName('')
-  }
+  const { story, passages } = store.graph!
 
   return (
     <div className="panel">
@@ -216,49 +197,8 @@ function StoryPanel({ store }: { store: StoryStore }) {
         Description and opening are edited as the premise, on the Lore tab.<br />
         {passages.length} passage{passages.length === 1 ? '' : 's'} · IFID <code>{story.ifid}</code>
         {' · '}
-        <a href={api.tweeUrl(story.id)} download title="Twee 3 with SugarCube macros; Twine and Tweego import it">Export Twee</a>
+        <a href={api.tweeUrl(story.id)} download title="Plain Twee 3; Twine and Tweego import it">Export Twee</a>
       </p>
-
-      <div className="panel-head"><span className="kind">Variables</span></div>
-      <table className="vars">
-        <thead><tr><th>name</th><th>kind</th><th>default</th><th /></tr></thead>
-        <tbody>
-          {variables.map((v) => <VariableRow key={v.id} v={v} store={store} />)}
-          <tr>
-            <td><input placeholder="new variable" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} /></td>
-            <td>
-              <select value={kind} onChange={(e) => setKind(e.target.value as VariableKind)}>
-                {KINDS.map((k) => <option key={k}>{k}</option>)}
-              </select>
-            </td>
-            <td />
-            <td><button onClick={add} disabled={!name.trim()}>Add</button></td>
-          </tr>
-        </tbody>
-      </table>
-      <p className="muted small">Flags are booleans, stats are numbers, items are counts.</p>
     </div>
-  )
-}
-
-function VariableRow({ v, store }: { v: Variable; store: StoryStore }) {
-  const save = (body: Partial<Variable>) => store.updateVariable(v.id, body)
-  return (
-    <tr>
-      <td><TextField value={v.name} onSave={(name) => save({ name })} /></td>
-      <td>
-        <select value={v.kind} onChange={(e) => { const kind = e.target.value as VariableKind; save({ kind, default: defaultFor(kind) }) }}>
-          {KINDS.map((k) => <option key={k}>{k}</option>)}
-        </select>
-      </td>
-      <td>
-        {v.kind === 'flag' ? (
-          <input type="checkbox" checked={v.default === true} onChange={(e) => save({ default: e.target.checked })} />
-        ) : (
-          <NumberField value={typeof v.default === 'number' ? v.default : null} onSave={(n) => save({ default: n ?? 0 })} />
-        )}
-      </td>
-      <td><button className="icon danger" title="delete" onClick={() => store.deleteVariable(v.id)}>×</button></td>
-    </tr>
   )
 }

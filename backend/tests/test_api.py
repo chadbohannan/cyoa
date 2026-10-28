@@ -24,11 +24,11 @@ def test_health_and_story_roundtrip(client):
     p2 = c.post(f"/api/stories/{s['id']}/passages", json={"title": "Pit"}).json()
     ch = c.post(
         f"/api/stories/{s['id']}/choices",
-        json={"from_passage": start, "to_passage": p2["id"], "text": "Jump", "effects": {"set": {"brave": True}}},
+        json={"from_passage": start, "to_passage": p2["id"], "text": "Jump"},
     ).json()
     g = c.get(f"/api/stories/{s['id']}/graph").json()
     assert [p["title"] for p in g["passages"]] == ["Start", "Pit"]
-    assert g["choices"][0]["effects"] == {"set": {"brave": True}}
+    assert g["choices"][0]["text"] == "Jump" and "effects" not in g["choices"][0] and "variables" not in g
     assert g["passages"][0]["meta"] == {} and g["passages"][0]["provenance"] == "human"
 
     # deleting the target dangles the choice rather than removing it
@@ -64,7 +64,7 @@ def test_updated_at_bumps_on_child_write(client):
     sid = s["id"]
     with db.transaction() as conn:
         conn.execute("UPDATE stories SET updated_at = '2000-01-01 00:00:00' WHERE id = ?", (sid,))
-    c.post(f"/api/stories/{sid}/variables", json={"name": "gold", "kind": "stat", "default": 5})
+    c.post(f"/api/stories/{sid}/lore", json={"kind": "place", "name": "Cave"})
     stories = c.get("/api/stories").json()
     assert stories[0]["id"] == sid and stories[0]["updated_at"] != "2000-01-01 00:00:00"
 
@@ -101,26 +101,16 @@ def test_choice_patch_validates_target(client):
     other = c.post("/api/stories", json={"title": "Other"}).json()
     r = c.patch(f"/api/stories/{sid}/choices/{ch['id']}", json={"to_passage": other["start_passage_id"]})
     assert r.status_code == 422
-    r = c.patch(
-        f"/api/stories/{sid}/choices/{ch['id']}",
-        json={"to_passage": start, "condition": {"var": "brave", "op": "==", "value": True}},
-    )
-    assert r.json()["to_passage"] == start and r.json()["condition"]["var"] == "brave"
+    r = c.patch(f"/api/stories/{sid}/choices/{ch['id']}", json={"to_passage": start, "text": "go back"})
+    assert r.json()["to_passage"] == start and r.json()["text"] == "go back"
     assert c.delete(f"/api/stories/{sid}/choices/{ch['id']}").status_code == 204
     assert c.delete(f"/api/stories/{sid}/choices/{ch['id']}").status_code == 404
 
 
-def test_variables_lore(client):
+def test_lore(client):
     c = client
     s = c.post("/api/stories", json={"title": "A"}).json()
     sid = s["id"]
-
-    v = c.post(f"/api/stories/{sid}/variables", json={"name": "brave", "kind": "flag", "default": False}).json()
-    assert v["default"] is False
-    assert c.post(f"/api/stories/{sid}/variables", json={"name": "brave", "kind": "flag"}).status_code == 409
-    assert c.post(f"/api/stories/{sid}/variables", json={"name": "x", "kind": "bogus"}).status_code == 422
-    v = c.patch(f"/api/stories/{sid}/variables/{v['id']}", json={"default": None}).json()
-    assert v["default"] is None
 
     lore = c.post(f"/api/stories/{sid}/lore", json={"kind": "character", "name": "Ada", "body": "engineer"}).json()
     c.patch(f"/api/stories/{sid}/lore/{lore['id']}", json={"reviewed": True})
@@ -138,26 +128,20 @@ def test_play_and_problems(client):
     s = c.post("/api/stories", json={"title": "Cave"}).json()
     sid, start = s["id"], s["start_passage_id"]
     base = f"/api/stories/{sid}"
-    c.post(f"{base}/variables", json={"name": "brave", "kind": "flag", "default": False})
-    c.post(f"{base}/variables", json={"name": "gold", "kind": "stat", "default": 3})
     pit = c.post(f"{base}/passages", json={"title": "Pit"}).json()
     island = c.post(f"{base}/passages", json={"title": "Island"}).json()
-    jump = c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Jump",
-                                          "effects": {"set": {"brave": True}, "add": {"gold": -1}}}).json()
-    fly = c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Fly",
-                                         "condition": {"var": "brave", "op": "==", "value": True}}).json()
-    dangle = c.post(f"{base}/choices", json={"from_passage": pit["id"], "text": "Dig", "sort_order": 1,
-                                            "effects": {"give": ["shovel"]}}).json()
+    jump = c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Jump"}).json()
+    fly = c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Fly", "sort_order": 1}).json()
+    dangle = c.post(f"{base}/choices", json={"from_passage": pit["id"], "text": "Dig", "sort_order": 1}).json()
 
     v = c.post(f"{base}/play/start", json={}).json()
-    assert v["passage"]["id"] == start and v["state"] == {"brave": False, "gold": 3}
-    assert [ch["id"] for ch in v["choices"]] == [jump["id"]]  # Fly is hidden by its condition
+    assert v["passage"]["id"] == start and "state" not in v
+    assert [ch["id"] for ch in v["choices"]] == [jump["id"], fly["id"]]
 
-    # the server re-checks the condition itself
-    assert c.post(f"{base}/play/choose", json={"choice_id": fly["id"], "state": v["state"]}).status_code == 409
-    v = c.post(f"{base}/play/choose", json={"choice_id": jump["id"], "state": v["state"]}).json()
-    assert v["passage"]["id"] == pit["id"] and v["state"] == {"brave": True, "gold": 2}
-    assert c.post(f"{base}/play/choose", json={"choice_id": dangle["id"], "state": v["state"]}).status_code == 409
+    v = c.post(f"{base}/play/choose", json={"choice_id": jump["id"]}).json()
+    assert v["passage"]["id"] == pit["id"]
+    assert c.post(f"{base}/play/choose", json={"choice_id": dangle["id"]}).status_code == 409
+    assert c.post(f"{base}/play/choose", json={"choice_id": 99999}).status_code == 404
 
     # play from here
     v = c.post(f"{base}/play/start", json={"passage_id": island["id"]}).json()
@@ -168,7 +152,6 @@ def test_play_and_problems(client):
         "no_start": False,
         "unreachable": [island["id"]],
         "dangling": [dangle["id"]],
-        "undeclared": [{"choice_id": dangle["id"], "var": "shovel"}],
         "endings": [],
         "unfinished": [island["id"]],
         "merge_candidates": [],
@@ -197,7 +180,7 @@ def test_is_ending_overrides_choices_at_play(client):
     p = c.get(f"{base}/problems").json()
     assert p["endings"] == [stub["id"]] and p["unfinished"] == []
 
-    v = c.post(f"{base}/play/choose", json={"choice_id": c.get(f"{base}/graph").json()["choices"][0]["id"], "state": {}}).json()
+    v = c.post(f"{base}/play/choose", json={"choice_id": c.get(f"{base}/graph").json()["choices"][0]["id"]}).json()
     assert v["passage"]["id"] == stub["id"] and v["choices"] == []  # the stored "Back" choice is ignored
 
 
@@ -333,25 +316,21 @@ def test_playtest_and_twee_export(client):
     s = c.post("/api/stories", json={"title": "Cave [1]"}).json()
     sid, start = s["id"], s["start_passage_id"]
     base = f"/api/stories/{sid}"
-    c.post(f"{base}/variables", json={"name": "brave", "kind": "flag", "default": False})
-    pit = c.post(f"{base}/passages", json={"title": "Pit", "body": "Dark.", "reviewed": True, "pos_x": 10.5, "pos_y": 20}).json()
+    pit = c.post(f"{base}/passages", json={"title": "Pit", "body": "Dark, and *very* deep.", "reviewed": True, "pos_x": 10.5, "pos_y": 20}).json()
     pit2 = c.post(f"{base}/passages", json={"title": "Pit", "provenance": "agent"}).json()
     assert pit2["title"] == "Pit (2)"  # creation keeps names unique
     with db.transaction() as conn:  # data from before that rule: the export still de-duplicates
         conn.execute("UPDATE passages SET title = 'Pit' WHERE id = ?", (pit2["id"],))
-    gated = c.post(f"{base}/passages", json={"title": "Sky"}).json()
-    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Jump", "effects": {"set": {"brave": True}}})
-    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": gated["id"], "text": "Fly",
-                                    "condition": {"var": "brave", "op": "==", "value": True}})
+    orphan = c.post(f"{base}/passages", json={"title": "Sky"}).json()
+    c.post(f"{base}/choices", json={"from_passage": start, "to_passage": pit["id"], "text": "Jump"})
     c.post(f"{base}/choices", json={"from_passage": pit["id"], "to_passage": pit2["id"], "text": "Deeper"})
     dangle = c.post(f"{base}/choices", json={"from_passage": pit2["id"], "text": "Dig"}).json()
 
     r = c.post(f"{base}/playtest", json={"runs": 50, "seed": 1}).json()
-    # brave is never true on the start passage, so Sky is unreachable in play and Fly never taken
-    assert r["runs"] == 50 and r["unvisited"] == [gated["id"]] and r["cut"] == 0
+    assert r["runs"] == 50 and r["unvisited"] == [orphan["id"]] and r["cut"] == 0
     # JSON objects key by string, so the counters come back keyed by str(id)
     assert set(r["visited"]) == {str(start), str(pit["id"]), str(pit2["id"])} and r["visited"][str(start)] == 50
-    assert r["endings"] == {} and r["stuck"] == {} and r["dangling"] == {str(dangle["id"]): 50}
+    assert r["endings"] == {} and r["dangling"] == {str(dangle["id"]): 50}
     assert r["mean_length"] == 2.0
     assert c.post(f"{base}/playtest", json={"runs": 0}).status_code == 422
 
@@ -360,11 +339,10 @@ def test_playtest_and_twee_export(client):
     text = res.text
     assert text.startswith(":: StoryTitle\nCave [1]\n")
     assert f'"ifid": "{s["ifid"].upper()}"' in text and '"start": "Start"' in text
-    assert ":: StoryInit\n<<set $brave to false>>\n" in text
-    assert ':: Pit [reviewed] {"position":"10,20"}\nDark.\n[[Deeper->Pit (%d)]]\n' % pit2["id"] in text
+    assert "StoryInit" not in text and "<<" not in text  # no variables, so no macros
+    assert ':: Pit [reviewed] {"position":"10,20"}\nDark, and //very// deep.\n[[Deeper->Pit (%d)]]\n' % pit2["id"] in text
     assert ":: Pit (%d) [agent]" % pit2["id"] in text and "/* dangling: Dig */" in text
-    assert '<<link "Jump" "Pit">><<set $brave to true>><</link>>' in text
-    assert "<<if $brave is true>>[[Fly->Sky]]<</if>>" in text
+    assert "[[Jump->Pit]]" in text
 
     c.patch(f"{base}", json={"start_passage_id": None})
     assert c.post(f"{base}/playtest", json={}).status_code == 409
