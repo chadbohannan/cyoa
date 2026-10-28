@@ -11,7 +11,3 @@ Tooling that supports the operations defined in [`../CLAUDE.md`](../CLAUDE.md). 
 # From wiki/cyoa-wiki/
 scripts/lint-wiki.py .
 ```
-
-## system-one-spike.py
-
-Runs the per-passage defect checklist and pairwise comparison against `clef-flash-8k` on sampled passages of the dev database (planted moral/clock lines, scrambled copies, and the Sheriff before/after pair) and prints detection rates. Read-only on the database; needs Ollama with the model loaded. Results are in [Story Quality Scoring](../concepts/story-quality-scoring.md). Run it from `backend/` with `uv run python`.
